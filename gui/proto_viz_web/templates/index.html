@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MultiProtoPTA Visualizer</title>
+    <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
+  </head>
+  <body>
+    <div class="header-sticky">
+      <div class="topbar">
+        <h1>🔬 MultiProtoPTA Prototype Visualizer</h1>
+        <div class="status-info" id="statusInfo"></div>
+      </div>
+      <div class="nav-buttons">
+        <button id="restartBtn" class="nav-btn">⏮️ Restart</button>
+        <button id="nextBtn" class="nav-btn">⏭️ Next</button>
+        <div class="jump-control">
+          <input id="gotoInput" type="number" min="1" step="1" placeholder="Sample #" />
+          <button id="gotoBtn" class="nav-btn">⏩ Go</button>
+        </div>
+        <button id="exportBtn" class="nav-btn">💾 Save</button>
+        <button id="helpBtn" class="nav-btn">ℹ️ Help</button>
+      </div>
+    </div>
+
+    <div id="helpModal" class="modal hidden">
+      <div class="modal-content">
+        <span class="close">&times;</span>
+        <h2>How to Use MultiProtoPTA Visualizer</h2>
+        
+        <h3>📊 What is this?</h3>
+        <p>This tool helps you inspect and understand how <strong>MultiProtoPTA</strong> adapts CLIP vision-language models at test time. It shows:</p>
+        <ul>
+          <li>CLIP's zero-shot text embedding contribution</li>
+          <li>Prototype bank updates (learned patch-level visual features)</li>
+          <li>How prototypes are matched and scored for each class</li>
+        </ul>
+
+        <h3>🔄 Live Mode vs. Replay Mode</h3>
+        <dl>
+          <dt><strong>Live Mode</strong> (recommended for first-time use)</dt>
+          <dd>
+            <ol>
+              <li>Select a dataset (e.g., caltech101, eurosat)</li>
+              <li>Pick a backbone model (ViT-B/16 or RN50)</li>
+              <li>Set number of samples to process (200–500 for quick demo)</li>
+              <li>Click <strong>Load</strong></li>
+            </ol>
+            The system will:
+            <ul>
+              <li>Load CLIP and process samples one-by-one</li>
+              <li>Build prototype banks incrementally as it processes</li>
+              <li>Show you results <strong>as they happen</strong></li>
+            </ul>
+            ⏱️ <em>May take several minutes depending on number of samples and dataset size.</em>
+          </dd>
+          <dt><strong>Replay Mode</strong> (for offline inspection)</dt>
+          <dd>
+            <ol>
+              <li>Paste the path to a pre-saved `.pkl` file (e.g., <code>outputs/viz/caltech101_n200.pkl</code>)</li>
+              <li>Click <strong>Load</strong></li>
+            </ol>
+            You can then navigate and explore results instantly without re-processing.
+            <br/><em>Useful for sharing results or inspecting past runs.</em>
+          </dd>
+        </dl>
+
+        <h3>🎯 Understanding the Display</h3>
+        <ul>
+          <li><strong>Sample Image:</strong> The test input image</li>
+          <li><strong>Prediction Panel:</strong> Ground truth, prediction result, and running accuracy</li>
+          <li><strong>Score Bars:</strong> Visual bar chart showing final logits for top 10 classes</li>
+          <li><strong>Class Details:</strong> Expand any class to see scores, prototypes, and active matches</li>
+          <li><strong>Top Matches:</strong> Global ranking of all prototypes by patch cosine similarity</li>
+        </ul>
+
+        <h3>🧠 Understanding the Scores</h3>
+        <dl>
+          <dt><strong>Text Score</strong></dt>
+          <dd>How well the CLIP text embedding matches this image (zero-shot baseline). Range: ~[0–100].</dd>
+          
+          <dt><strong>Raw Proto</strong></dt>
+          <dd>Evidence-weighted average similarity of the top matching patches to this class's prototype bank. Range: [0–1].</dd>
+          
+          <dt><strong>Centered Proto</strong> (per-class)</dt>
+          <dd>
+            The raw_proto score adjusted by subtracting the <strong>mean raw_proto across all 1000 classes</strong>. This is a per-class aggregation.
+            <br/>Formula: <code>centered_proto = raw_proto − mean(raw_proto for all classes)</code>
+            <br/><strong>Why?</strong> Prevents the model from being biased toward any single class. Keeps logits balanced.
+            <br/><strong>Per-prototype note:</strong> Each active prototype also has its own <code>centered_score</code> computed the same way. The class-level centered_proto is the aggregation across all that class's prototypes.
+          </dd>
+          
+          <dt><strong>Final Logit</strong></dt>
+          <dd><code>text_score + τ × centered_proto</code> — the number used for prediction (class with highest logit wins).</dd>
+          
+          <dt><strong>Softmax Prob (%)</strong></dt>
+          <dd>Probability of this class from softmax(all logits). Shows model confidence.</dd>
+        </dl>
+
+        <h3>💾 Understanding the Prototype Bank</h3>
+        <dl>
+          <dt><strong>Bank Size (K)</strong></dt>
+          <dd>
+            Number of prototypes stored for this class. <strong>This grows over time!</strong>
+            <ul>
+              <li><strong>Samples 1–50:</strong> K usually 1–3 (algorithm just starting, learning first patches)</li>
+              <li><strong>Samples 100–200:</strong> K grows to 5–15 as more matching patches are collected</li>
+              <li><strong>Samples 200+:</strong> K approaches max_K (default 30 per class)</li>
+            </ul>
+            <strong>→ This is normal and expected!</strong> MultiProtoPTA adapts incrementally over time.
+          </dd>
+          
+          <dt><strong>Active Prototypes (shown in class details)</strong></dt>
+          <dd>
+            Prototypes from this class that <strong>actually matched</strong> the current image.
+            <ul>
+              <li>If Bank Size = 10 but only 1 active prototype: Only 1 of 10 stored prototypes had high similarity to this image's patches</li>
+              <li>The other 9 learned from different visual patterns, so they don't match this image</li>
+              <li><strong>→ This is selective and correct!</strong> The model only uses relevant prototypes.</li>
+            </ul>
+          </dd>
+          
+          <dt><strong>Appearance (App)</strong></dt>
+          <dd>How many images this prototype has matched with so far. Higher = more robust prototype learned from diverse examples.</dd>
+          
+          <dt><strong>Evidence Weight (Evid_W)</strong></dt>
+          <dd>
+            Confidence weight for this prototype: how much to trust it.
+            <br/>Formula: <code>min(1.0, 0.5 + 0.5 × (K−1) / 4)</code>
+            <br/>Ranges 0.5 → 1.0. Older, well-tested prototypes have weight 1.0; new ones have weight 0.5–0.75.
+          </dd>
+        </dl>
+
+        <h3>💾 Exporting Results</h3>
+        <p>Click <strong>Save</strong> to export the current sample as JSON to <code>outputs/viz_exports/</code>.</p>
+        <p>Filename format: <code>YYYYmmdd_HHMMSS_dataset_sampleXXXXX.json</code></p>
+
+        <h3>⚠️ Notes</h3>
+        <ul>
+          <li>You must <strong>Load</strong> data before using Next/Restart buttons</li>
+          <li>Live mode takes time; progress will update as samples are processed</li>
+          <li>Patch images show the closest matches to prototypes by cosine similarity</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="main-container">
+      <section class="load-section panel">
+        <h2>Load Dataset</h2>
+        <div class="load-grid">
+          <label>Mode
+            <select id="modeSelect">
+              <option value="live" selected>Live</option>
+              <option value="replay">Replay</option>
+            </select>
+          </label>
+          <label>Dataset
+            <select id="datasetSelect"></select>
+          </label>
+          <label id="configLabel">Config path
+            <input id="configInput" value="configs_multi_proto" />
+          </label>
+          <label id="backboneLabel">Backbone
+            <input id="backboneInput" value="ViT-B/16" />
+          </label>
+          <label id="dataRootLabel">Data root
+            <input id="dataRootInput" value="./data" />
+          </label>
+          <label id="nSamplesLabel">N samples
+            <input id="nSamplesInput" type="number" value="200" min="1" />
+          </label>
+          <label id="recordsLabel" class="hidden">Records path
+            <input id="recordsInput" placeholder="outputs/viz/xxx.pkl" />
+          </label>
+          <button id="loadBtn" class="primary">Load</button>
+        </div>
+        <div id="loadInfo" class="muted"></div>
+      </section>
+
+      <section id="contentSection" class="hidden">
+        <!-- Prediction Overview -->
+        <section class="panel prediction-overview">
+          <div class="pred-header">
+            <div class="sample-image-container">
+              <div class="label">Sample Image</div>
+              <canvas id="sampleCanvas" width="224" height="224"></canvas>
+              <div class="sample-label" id="sampleLabel"></div>
+            </div>
+            <div class="pred-card gt">
+              <div class="label">Ground Truth</div>
+              <div class="value" id="gtLabel"></div>
+            </div>
+            <div class="pred-arrow">→</div>
+            <div class="pred-card" id="predCard">
+              <div class="label">Prediction</div>
+              <div class="value" id="predLabel"></div>
+            </div>
+            <div class="pred-stats">
+              <div id="accDisplay"></div>
+              <div id="clipDisplay"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Score Visualization -->
+        <section class="panel scores-section">
+          <h2>Score Breakdown (Top 10 Classes)</h2>
+          <div id="scoreVisualization" class="score-bars"></div>
+        </section>
+
+        <!-- Class Details Accordion -->
+        <section class="panel classes-section">
+          <h2>Class Details</h2>
+          <div id="classAccordion" class="accordion"></div>
+        </section>
+
+        <!-- Top Prototype Matches -->
+        <section class="panel matches-section">
+          <h2>Top Prototype Matches (across all classes)</h2>
+          <table id="matchTable">
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Proto#</th>
+                <th>Appear</th>
+                <th>Evid_W</th>
+                <th>Max_Sim</th>
+                <th>Centered_S</th>
+                <th>Contrib</th>
+                <th>Patch Crops</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+      </section>
+    </div>
+
+    <pre id="errorBox" class="error-box hidden"></pre>
+
+    <script src="/static/app.js?v={{ asset_version }}"></script>
+  </body>
+</html>
