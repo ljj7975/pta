@@ -1,0 +1,5 @@
+conf_threshold: 0.5
+match_threshold: 0.75
+max_K: 100
+tau_proto: 20.0
+exclude_pos: false

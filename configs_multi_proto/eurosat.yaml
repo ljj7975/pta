@@ -1,0 +1,8 @@
+match_threshold: 0.55
+max_K: 100
+conf_threshold: 0.5
+n_half: 15.0
+soft_nn_top_m: 4
+alpha_max: 0.2
+quality_eps: 0.001
+exclude_pos: false
