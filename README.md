@@ -56,6 +56,19 @@ weights
 - Please follow the instructions at docs/DATASETS.md to prepare image recognition benchmarks.
 - [Link](https://huggingface.co/datasets/auniquesun/Point-PRC/tree/main/new-3ddg-benchmarks/xset/corruption) for modelnet_c and sonn_c.
 
+**Automated download (CD benchmark datasets):**
+`scripts/download_datasets.sh` downloads and extracts the 7 CD benchmark datasets automatically: caltech101, dtd, eurosat, fgvc, oxford_flowers, oxford_pets, and ucf101. The remaining datasets (ImageNet variants, stanford_cars, food101, sun397) require manual download; see docs/DATASETS.md for instructions.
+
+```bash
+# Download to ./data (default, matches --data-root default in runner.py)
+bash scripts/download_datasets.sh
+
+# Or specify a custom data root
+bash scripts/download_datasets.sh --data-root /path/to/data
+```
+
+The script is idempotent — rerunning it skips any dataset already present. Requires `wget`, `unzip`, and `gdown` (auto-installed via pip if missing). Note that the EuroSAT download URL (`madm.dfki.de`) can be unreliable; if it fails, download `EuroSAT.zip` manually and place it at `$DATA/EuroSAT.zip` before rerunning.
+
 ```
 data
 ├── caltech-101
