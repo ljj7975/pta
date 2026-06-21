@@ -110,8 +110,8 @@ class PTAAdapter(BaseAdapter):
         Run PTA on test set. Per-dataset config is loaded from self.cfg.
         """
         # Load hyperparameters from per-dataset YAML config
-        alpha = self.cfg["alpha"]  # Weight for text-feature component (0.01 → mostly prototype)
-        T = float(self.cfg["T"])   # Temperature for update weight decay (higher = slower updates)
+        alpha = self.cfg.get("alpha", 0.01)
+        T = float(self.cfg.get("T", 20.0))
 
         os.makedirs("outputs", exist_ok=True)
 
