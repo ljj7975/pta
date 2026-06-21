@@ -59,10 +59,13 @@ else
   mkdir -p "$CALTECH_DIR"
 
   if [ ! -d "$CALTECH_DIR/101_ObjectCategories" ]; then
-    wget -c -P "$CALTECH_DIR" \
-      "http://www.vision.caltech.edu/Image_Datasets/Caltech101/101_ObjectCategories.tar.gz"
-    tar -xzf "$CALTECH_DIR/101_ObjectCategories.tar.gz" -C "$CALTECH_DIR"
-    rm -f "$CALTECH_DIR/101_ObjectCategories.tar.gz"
+    # vision.caltech.edu is dead; official mirror is now data.caltech.edu
+    wget -c -L \
+      "https://data.caltech.edu/records/mzrjq-6wc02/files/caltech-101.zip?download=1" \
+      -O "$DATA/caltech-101.zip"
+    unzip -q "$DATA/caltech-101.zip" -d "$DATA"
+    rm -f "$DATA/caltech-101.zip"
+    # zip extracts as $DATA/caltech-101/101_ObjectCategories/
   fi
 
   if [ ! -f "$CALTECH_DIR/split_zhou_Caltech101.json" ]; then
@@ -85,7 +88,7 @@ else
   mkdir -p "$DTD_DIR"
 
   if [ ! -d "$DTD_DIR/images" ]; then
-    wget -c -P "$DATA" \
+    wget -c -L -P "$DATA" \
       "https://www.robots.ox.ac.uk/~vgg/data/dtd/download/dtd-r1.0.1.tar.gz"
     tar -xzf "$DATA/dtd-r1.0.1.tar.gz" -C "$DATA"
     rm -f "$DATA/dtd-r1.0.1.tar.gz"
@@ -104,9 +107,7 @@ fi
 #   images:  2750/
 #   split:   split_zhou_EuroSAT.json
 #
-# Note: the primary download URL (madm.dfki.de) can be unreliable.
-#   If it fails, grab EuroSAT.zip manually from the EuroSAT GitHub page
-#   and place it at $DATA/EuroSAT.zip before rerunning.
+# Uses the HuggingFace mirror (same source as torchvision); extracts as 2750/.
 # ---------------------------------------------------------------------------
 EUROSAT_DIR="$DATA/eurosat"
 if [ -d "$EUROSAT_DIR/2750" ] && [ -f "$EUROSAT_DIR/split_zhou_EuroSAT.json" ]; then
@@ -116,11 +117,12 @@ else
   mkdir -p "$EUROSAT_DIR"
 
   if [ ! -d "$EUROSAT_DIR/2750" ]; then
-    wget -c -P "$DATA" \
-      "https://madm.dfki.de/files/sentinel/EuroSAT.zip"
+    # HuggingFace mirror (used by torchvision); extracts directly as 2750/
+    wget -c -L \
+      "https://huggingface.co/datasets/torchgeo/eurosat/resolve/c877bcd43f099cd0196738f714544e355477f3fd/EuroSAT.zip" \
+      -O "$DATA/EuroSAT.zip"
     unzip -q "$DATA/EuroSAT.zip" -d "$EUROSAT_DIR"
     rm -f "$DATA/EuroSAT.zip"
-    # archive extracts as $EUROSAT_DIR/2750/
   fi
 
   if [ ! -f "$EUROSAT_DIR/split_zhou_EuroSAT.json" ]; then
@@ -143,7 +145,7 @@ if [ -d "$FGVC_DIR/data/images" ]; then
 else
   echo "[fgvc] Downloading..."
 
-  wget -c -P "$DATA" \
+  wget -c -L -P "$DATA" \
     "https://www.robots.ox.ac.uk/~vgg/data/fgvc-aircraft/archives/fgvc-aircraft-2013b.tar.gz"
   tar -xzf "$DATA/fgvc-aircraft-2013b.tar.gz" -C "$DATA"
   rm -f "$DATA/fgvc-aircraft-2013b.tar.gz"
@@ -168,7 +170,7 @@ else
   mkdir -p "$FLOWERS_DIR"
 
   if [ ! -d "$FLOWERS_DIR/jpg" ]; then
-    wget -c -P "$FLOWERS_DIR" \
+    wget -c -L -P "$FLOWERS_DIR" \
       "https://www.robots.ox.ac.uk/~vgg/data/flowers/102/102flowers.tgz"
     tar -xzf "$FLOWERS_DIR/102flowers.tgz" -C "$FLOWERS_DIR"
     rm -f "$FLOWERS_DIR/102flowers.tgz"
@@ -176,7 +178,7 @@ else
   fi
 
   if [ ! -f "$FLOWERS_DIR/imagelabels.mat" ]; then
-    wget -c -P "$FLOWERS_DIR" \
+    wget -c -L -P "$FLOWERS_DIR" \
       "https://www.robots.ox.ac.uk/~vgg/data/flowers/102/imagelabels.mat"
   fi
 
@@ -207,14 +209,14 @@ else
   mkdir -p "$PETS_DIR"
 
   if [ ! -d "$PETS_DIR/images" ]; then
-    wget -c -P "$PETS_DIR" \
+    wget -c -L -P "$PETS_DIR" \
       "https://www.robots.ox.ac.uk/~vgg/data/pets/data/images.tar.gz"
     tar -xzf "$PETS_DIR/images.tar.gz" -C "$PETS_DIR"
     rm -f "$PETS_DIR/images.tar.gz"
   fi
 
   if [ ! -d "$PETS_DIR/annotations" ]; then
-    wget -c -P "$PETS_DIR" \
+    wget -c -L -P "$PETS_DIR" \
       "https://www.robots.ox.ac.uk/~vgg/data/pets/data/annotations.tar.gz"
     tar -xzf "$PETS_DIR/annotations.tar.gz" -C "$PETS_DIR"
     rm -f "$PETS_DIR/annotations.tar.gz"

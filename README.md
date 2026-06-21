@@ -67,7 +67,7 @@ bash scripts/download_datasets.sh
 bash scripts/download_datasets.sh --data-root /path/to/data
 ```
 
-The script is idempotent — rerunning it skips any dataset already present. Requires `wget`, `unzip`, and `gdown` (auto-installed via pip if missing). Note that the EuroSAT download URL (`madm.dfki.de`) can be unreliable; if it fails, download `EuroSAT.zip` manually and place it at `$DATA/EuroSAT.zip` before rerunning.
+The script is idempotent — rerunning it skips any dataset already present. Requires `wget`, `unzip`, and `gdown` (auto-installed via pip if missing).
 
 ```
 data
