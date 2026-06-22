@@ -260,12 +260,102 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# NOT YET IMPLEMENTED — stubs for remaining datasets
+# food101  →  $DATA/food-101/
+#   images:  images/<class>/*.jpg
+#   split:   split_zhou_Food101.json
+#
+# Split JSON comes from CoCoOp's data setup:
+#   https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md
+# Download it manually and place at $DATA/food-101/split_zhou_Food101.json,
+# then re-run this script to skip the image download if already done.
+# ---------------------------------------------------------------------------
+FOOD_DIR="$DATA/food-101"
+if [ -d "$FOOD_DIR/images" ] && [ -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
+  echo "[food101] Already present, skipping."
+else
+  echo "[food101] Downloading images (~5GB)..."
+  mkdir -p "$FOOD_DIR"
+
+  if [ ! -d "$FOOD_DIR/images" ]; then
+    wget -c -L \
+      "https://data.vision.ee.ethz.ch/cvl/datasets_extra/food-101/food-101.tar.gz" \
+      -O "$DATA/food-101.tar.gz"
+    tar -xzf "$DATA/food-101.tar.gz" -C "$DATA"
+    rm -f "$DATA/food-101.tar.gz"
+    # archive extracts as food-101/images/ already
+  fi
+
+  if [ ! -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
+    echo "[food101] WARNING: split_zhou_Food101.json not found."
+    echo "  Download it from the CoCoOp data setup guide:"
+    echo "  https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md"
+    echo "  Place it at: $FOOD_DIR/split_zhou_Food101.json"
+  else
+    echo "[food101] Done."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# sun397  →  $DATA/sun397/
+#   images:  SUN397/<class>/...
+#   split:   split_zhou_SUN397.json
+#
+# WARNING: archive is ~37GB. Split JSON from CoCoOp (same as food101 above).
+# ---------------------------------------------------------------------------
+SUN_DIR="$DATA/sun397"
+if [ -d "$SUN_DIR/SUN397" ] && [ -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
+  echo "[sun397] Already present, skipping."
+else
+  echo "[sun397] Downloading images (~37GB — this will take a while)..."
+  mkdir -p "$SUN_DIR"
+
+  if [ ! -d "$SUN_DIR/SUN397" ]; then
+    wget -c -L \
+      "http://vision.princeton.edu/projects/2010/SUN/SUN397.tar.gz" \
+      -O "$SUN_DIR/SUN397.tar.gz"
+    tar -xzf "$SUN_DIR/SUN397.tar.gz" -C "$SUN_DIR"
+    rm -f "$SUN_DIR/SUN397.tar.gz"
+    # archive extracts as SUN397/ inside sun397/
+  fi
+
+  if [ ! -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
+    echo "[sun397] WARNING: split_zhou_SUN397.json not found."
+    echo "  Download it from the CoCoOp data setup guide:"
+    echo "  https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md"
+    echo "  Place it at: $SUN_DIR/split_zhou_SUN397.json"
+  else
+    echo "[sun397] Done."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# stanford_cars  →  $DATA/stanford_cars/
+#   images:  (class subfolders referenced relative to stanford_cars/)
+#   split:   split_zhou_StanfordCars.json
+#
+# Official ai.stanford.edu URLs are dead. Options:
+#   - Kaggle: https://www.kaggle.com/datasets/jessicali9530/stanford-cars-dataset
+#     (requires kaggle CLI: kaggle datasets download jessicali9530/stanford-cars-dataset)
+#   - HuggingFace: https://huggingface.co/datasets/tanganke/stanford_cars
+# After downloading, place images under $DATA/stanford_cars/ and the zhou split
+# JSON at $DATA/stanford_cars/split_zhou_StanfordCars.json.
+# ---------------------------------------------------------------------------
+CARS_DIR="$DATA/stanford_cars"
+if [ -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
+  echo "[stanford_cars] Split found — assuming images present, skipping."
+else
+  echo "[stanford_cars] MANUAL SETUP REQUIRED."
+  echo "  Official URLs are down. Download via Kaggle or HuggingFace:"
+  echo "    kaggle datasets download jessicali9530/stanford-cars-dataset"
+  echo "  Then place images under $CARS_DIR/ and the zhou split JSON at:"
+  echo "    $CARS_DIR/split_zhou_StanfordCars.json"
+  echo "  Split JSON available from CoCoOp DATASETS.md (see food101 note above)."
+fi
+
+# ---------------------------------------------------------------------------
+# NOT YET IMPLEMENTED
 # ---------------------------------------------------------------------------
 # imagenet        Manual download required (https://image-net.org/index.php)
-# stanford_cars   Primary URLs (ai.stanford.edu) are down; check Kaggle mirror
-# food101         https://data.vision.ee.ethz.ch/cvl/datasets_extra/food-101/
-# sun397          http://vision.princeton.edu/projects/2010/SUN/SUN397.tar.gz
 # imagenetv2      https://s3-us-west-2.amazonaws.com/imagenetv2public/imagenetv2-matched-frequency.tar.gz
 # imagenet-sketch https://github.com/HaohanWang/ImageNet-Sketch (HuggingFace mirror recommended)
 # imagenet-a      https://github.com/hendrycks/natural-adv-examples
