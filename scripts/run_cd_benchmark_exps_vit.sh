@@ -25,8 +25,8 @@ run() {
     return $exit_code
 }
 
-# 7-dataset CD suite (food101/stanford_cars/sun397 require manual data setup — see download_datasets.sh)
-CD_ALL="caltech101/dtd/eurosat/fgvc/oxford_flowers/oxford_pets/ucf101"
+# Full CD suite (stanford_cars requires manual image download if ai.stanford.edu is down)
+CD_ALL="caltech101/dtd/eurosat/fgvc/food101/oxford_flowers/oxford_pets/stanford_cars/sun397/ucf101"
 
 run exp1_fixed_unique_patches  configs_exp1 "$CD_ALL" cd_exp1_vit.log
 run exp2_adaptive_tau_proto    configs_exp2 "$CD_ALL" cd_exp2_vit.log

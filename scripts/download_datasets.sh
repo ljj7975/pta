@@ -263,17 +263,12 @@ fi
 # food101  →  $DATA/food-101/
 #   images:  images/<class>/*.jpg
 #   split:   split_zhou_Food101.json
-#
-# Split JSON comes from CoCoOp's data setup:
-#   https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md
-# Download it manually and place at $DATA/food-101/split_zhou_Food101.json,
-# then re-run this script to skip the image download if already done.
 # ---------------------------------------------------------------------------
 FOOD_DIR="$DATA/food-101"
 if [ -d "$FOOD_DIR/images" ] && [ -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
   echo "[food101] Already present, skipping."
 else
-  echo "[food101] Downloading images (~5GB)..."
+  echo "[food101] Downloading..."
   mkdir -p "$FOOD_DIR"
 
   if [ ! -d "$FOOD_DIR/images" ]; then
@@ -282,17 +277,13 @@ else
       -O "$DATA/food-101.tar.gz"
     tar -xzf "$DATA/food-101.tar.gz" -C "$DATA"
     rm -f "$DATA/food-101.tar.gz"
-    # archive extracts as food-101/images/ already
   fi
 
   if [ ! -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
-    echo "[food101] WARNING: split_zhou_Food101.json not found."
-    echo "  Download it from the CoCoOp data setup guide:"
-    echo "  https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md"
-    echo "  Place it at: $FOOD_DIR/split_zhou_Food101.json"
-  else
-    echo "[food101] Done."
+    gdrive "1QK0tGi096I0Ba6kggatX1ee6dJFIcEJl" "$FOOD_DIR/split_zhou_Food101.json"
   fi
+
+  echo "[food101] Done."
 fi
 
 # ---------------------------------------------------------------------------
@@ -300,13 +291,13 @@ fi
 #   images:  SUN397/<class>/...
 #   split:   split_zhou_SUN397.json
 #
-# WARNING: archive is ~37GB. Split JSON from CoCoOp (same as food101 above).
+# WARNING: archive is ~37GB.
 # ---------------------------------------------------------------------------
 SUN_DIR="$DATA/sun397"
 if [ -d "$SUN_DIR/SUN397" ] && [ -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
   echo "[sun397] Already present, skipping."
 else
-  echo "[sun397] Downloading images (~37GB — this will take a while)..."
+  echo "[sun397] Downloading (~37GB — this will take a while)..."
   mkdir -p "$SUN_DIR"
 
   if [ ! -d "$SUN_DIR/SUN397" ]; then
@@ -315,41 +306,50 @@ else
       -O "$SUN_DIR/SUN397.tar.gz"
     tar -xzf "$SUN_DIR/SUN397.tar.gz" -C "$SUN_DIR"
     rm -f "$SUN_DIR/SUN397.tar.gz"
-    # archive extracts as SUN397/ inside sun397/
   fi
 
   if [ ! -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
-    echo "[sun397] WARNING: split_zhou_SUN397.json not found."
-    echo "  Download it from the CoCoOp data setup guide:"
-    echo "  https://github.com/KaiyangZhou/CoOp/blob/main/DATASETS.md"
-    echo "  Place it at: $SUN_DIR/split_zhou_SUN397.json"
-  else
-    echo "[sun397] Done."
+    gdrive "1y2RD81BYuiyvebdN-JymPfyWYcd8_MUq" "$SUN_DIR/split_zhou_SUN397.json"
   fi
+
+  echo "[sun397] Done."
 fi
 
 # ---------------------------------------------------------------------------
 # stanford_cars  →  $DATA/stanford_cars/
-#   images:  (class subfolders referenced relative to stanford_cars/)
+#   images:  cars_test/
+#   annots:  cars_test_annos_withlabels.mat
 #   split:   split_zhou_StanfordCars.json
 #
-# Official ai.stanford.edu URLs are dead. Options:
-#   - Kaggle: https://www.kaggle.com/datasets/jessicali9530/stanford-cars-dataset
-#     (requires kaggle CLI: kaggle datasets download jessicali9530/stanford-cars-dataset)
-#   - HuggingFace: https://huggingface.co/datasets/tanganke/stanford_cars
-# After downloading, place images under $DATA/stanford_cars/ and the zhou split
-# JSON at $DATA/stanford_cars/split_zhou_StanfordCars.json.
+# NOTE: ai.stanford.edu URLs are unreliable. If wget fails, download manually
+# from Kaggle (jessicali9530/stanford-cars-dataset) and place under $CARS_DIR/.
 # ---------------------------------------------------------------------------
 CARS_DIR="$DATA/stanford_cars"
-if [ -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
-  echo "[stanford_cars] Split found — assuming images present, skipping."
+if [ -d "$CARS_DIR/cars_test" ] && [ -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
+  echo "[stanford_cars] Already present, skipping."
 else
-  echo "[stanford_cars] MANUAL SETUP REQUIRED."
-  echo "  Official URLs are down. Download via Kaggle or HuggingFace:"
-  echo "    kaggle datasets download jessicali9530/stanford-cars-dataset"
-  echo "  Then place images under $CARS_DIR/ and the zhou split JSON at:"
-  echo "    $CARS_DIR/split_zhou_StanfordCars.json"
-  echo "  Split JSON available from CoCoOp DATASETS.md (see food101 note above)."
+  echo "[stanford_cars] Downloading..."
+  mkdir -p "$CARS_DIR"
+
+  if [ ! -d "$CARS_DIR/cars_test" ]; then
+    wget -c -L \
+      "http://ai.stanford.edu/~jkrause/car196/cars_test.tgz" \
+      -O "$CARS_DIR/cars_test.tgz"
+    tar -xzf "$CARS_DIR/cars_test.tgz" -C "$CARS_DIR"
+    rm -f "$CARS_DIR/cars_test.tgz"
+  fi
+
+  if [ ! -f "$CARS_DIR/cars_test_annos_withlabels.mat" ]; then
+    wget -c -L \
+      "http://ai.stanford.edu/~jkrause/car196/cars_test_annos_withlabels.mat" \
+      -O "$CARS_DIR/cars_test_annos_withlabels.mat"
+  fi
+
+  if [ ! -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
+    gdrive "1ObCFbaAgVu0I-k_Au-gIUcefirdAuizT" "$CARS_DIR/split_zhou_StanfordCars.json"
+  fi
+
+  echo "[stanford_cars] Done."
 fi
 
 # ---------------------------------------------------------------------------
