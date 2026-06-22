@@ -9,6 +9,7 @@ Usage:
 import argparse
 import re
 from collections import defaultdict
+from typing import Dict, List, Optional
 
 CD_DATASETS = [
     "caltech101", "dtd", "eurosat", "fgvc",
@@ -23,8 +24,8 @@ RESULT_RE = re.compile(
 )
 
 
-def parse(path: str) -> dict[str, dict[str, float]]:
-    data: dict[str, dict[str, float]] = defaultdict(dict)
+def parse(path: str) -> Dict[str, Dict[str, float]]:
+    data: Dict[str, Dict[str, float]] = defaultdict(dict)
     with open(path) as f:
         for line in f:
             m = RESULT_RE.match(line.strip())
@@ -34,7 +35,7 @@ def parse(path: str) -> dict[str, dict[str, float]]:
     return data
 
 
-def print_table(data: dict[str, dict[str, float]], methods: list[str] | None) -> None:
+def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]]) -> None:
     if methods:
         # case-insensitive substring match
         keys = [
