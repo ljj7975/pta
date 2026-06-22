@@ -59,13 +59,16 @@ else
   mkdir -p "$CALTECH_DIR"
 
   if [ ! -d "$CALTECH_DIR/101_ObjectCategories" ]; then
-    # vision.caltech.edu is dead; official mirror is now data.caltech.edu
+    # vision.caltech.edu is dead; official mirror is now data.caltech.edu.
+    # The zip contains caltech-101/101_ObjectCategories.tar.gz — a tar.gz nested
+    # inside the zip — so we need two extraction steps.
     wget -c -L \
       "https://data.caltech.edu/records/mzrjq-6wc02/files/caltech-101.zip?download=1" \
       -O "$DATA/caltech-101.zip"
     unzip -q "$DATA/caltech-101.zip" -d "$DATA"
     rm -f "$DATA/caltech-101.zip"
-    # zip extracts as $DATA/caltech-101/101_ObjectCategories/
+    tar -xzf "$CALTECH_DIR/101_ObjectCategories.tar.gz" -C "$CALTECH_DIR"
+    rm -f "$CALTECH_DIR/101_ObjectCategories.tar.gz"
   fi
 
   if [ ! -f "$CALTECH_DIR/split_zhou_Caltech101.json" ]; then
