@@ -276,9 +276,9 @@ else
   mkdir -p "$FOOD_DIR"
 
   if [ ! -d "$FOOD_DIR/images" ]; then
+    pip install -q datasets
     python - <<PYEOF
 import sys, os
-# Remove cwd from path so local datasets/ dir doesn't shadow the HF package
 sys.path = [p for p in sys.path if p not in ("", ".")]
 import datasets as hfds
 
@@ -331,6 +331,7 @@ else
   mkdir -p "$SUN_DIR"
 
   if [ ! -d "$SUN_DIR/SUN397" ]; then
+    pip install -q datasets
     python - <<PYEOF
 import sys, os, json
 
