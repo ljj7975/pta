@@ -410,36 +410,82 @@ fi
 
 # ---------------------------------------------------------------------------
 # stanford_cars  →  $DATA/stanford_cars/
-#   images:  cars_test/
-#   annots:  cars_test_annos_withlabels.mat
+#   images:  cars_test/<img>.jpg
 #   split:   split_zhou_StanfordCars.json
 #
-# NOTE: ai.stanford.edu URLs are unreliable. If wget fails, download manually
-# from Kaggle (jessicali9530/stanford-cars-dataset) and place under $CARS_DIR/.
+# ai.stanford.edu is unreliable (returns 500). Images downloaded from
+# HuggingFace tanganke/stanford_cars instead.
+# If HF path metadata preserves original filenames (e.g. 00001.jpg),
+# the zhou split JSON is used directly. Otherwise a compatible split JSON
+# is generated from the HF test split.
 # ---------------------------------------------------------------------------
 CARS_DIR="$DATA/stanford_cars"
 if [ -d "$CARS_DIR/cars_test" ] && [ -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
   echo "[stanford_cars] Already present, skipping."
 else
-  echo "[stanford_cars] Downloading..."
+  echo "[stanford_cars] Downloading from HuggingFace tanganke/stanford_cars..."
   mkdir -p "$CARS_DIR"
 
   if [ ! -d "$CARS_DIR/cars_test" ]; then
-    wget -c -L \
-      "http://ai.stanford.edu/~jkrause/car196/cars_test.tgz" \
-      -O "$CARS_DIR/cars_test.tgz"
-    tar -xzf "$CARS_DIR/cars_test.tgz" -C "$CARS_DIR"
-    rm -f "$CARS_DIR/cars_test.tgz"
-  fi
+    pip install -q datasets
+    python - <<PYEOF
+import sys, os, json
 
-  if [ ! -f "$CARS_DIR/cars_test_annos_withlabels.mat" ]; then
-    wget -c -L \
-      "http://ai.stanford.edu/~jkrause/car196/cars_test_annos_withlabels.mat" \
-      -O "$CARS_DIR/cars_test_annos_withlabels.mat"
+sys.path = [p for p in sys.path if p not in ("", ".")]
+import datasets as hfds
+
+cars_test_dir = os.path.join("$CARS_DIR", "cars_test")
+os.makedirs(cars_test_dir, exist_ok=True)
+
+generated_split = {"test": []}
+use_generated_split = False
+counter = 0
+
+for split_name in ("train", "test"):
+    print(f"  Fetching {split_name} split...", flush=True)
+    ds = hfds.load_dataset(
+        "tanganke/stanford_cars", split=split_name, trust_remote_code=True
+    ).cast_column("image", hfds.Image(decode=False))
+
+    label_names = ds.features["label"].names
+
+    for item in ds:
+        label_int = item["label"]
+        class_name = label_names[label_int]
+
+        src_path = item["image"].get("path") if item["image"] else None
+
+        if src_path and (src_path.endswith(".jpg") or src_path.endswith(".jpeg")):
+            fname = os.path.basename(src_path)
+        else:
+            use_generated_split = True
+            counter += 1
+            fname = f"{counter:05d}.jpg"
+
+        dest = os.path.join(cars_test_dir, fname)
+        if not os.path.exists(dest):
+            with open(dest, "wb") as f:
+                f.write(item["image"]["bytes"])
+
+        if split_name == "test":
+            generated_split["test"].append([
+                os.path.join("cars_test", fname), label_int, class_name
+            ])
+
+split_json_path = os.path.join("$CARS_DIR", "split_zhou_StanfordCars_hf.json")
+with open(split_json_path, "w") as f:
+    json.dump(generated_split, f)
+print(f"  Wrote generated split to {split_json_path}")
+print(f"  use_generated_split={use_generated_split}", flush=True)
+PYEOF
   fi
 
   if [ ! -f "$CARS_DIR/split_zhou_StanfordCars.json" ]; then
-    gdrive "1ObCFbaAgVu0I-k_Au-gIUcefirdAuizT" "$CARS_DIR/split_zhou_StanfordCars.json"
+    echo "[stanford_cars] Attempting to download original zhou split from Google Drive..."
+    gdrive "1ObCFbaAgVu0I-k_Au-gIUcefirdAuizT" "$CARS_DIR/split_zhou_StanfordCars.json" || {
+      echo "[stanford_cars] Google Drive download failed; using HF-generated split."
+      cp "$CARS_DIR/split_zhou_StanfordCars_hf.json" "$CARS_DIR/split_zhou_StanfordCars.json"
+    }
   fi
 
   echo "[stanford_cars] Done."
