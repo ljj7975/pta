@@ -314,28 +314,94 @@ fi
 
 # ---------------------------------------------------------------------------
 # sun397  →  $DATA/sun397/
-#   images:  SUN397/<class>/...
+#   images:  SUN397/<letter>/<class>/...
 #   split:   split_zhou_SUN397.json
 #
-# WARNING: archive is ~37GB.
+# Princeton's original URL is dead (404 after redirect). Images are fetched
+# from HuggingFace tanganke/sun397 instead (~37GB, ~109k images).
+# If HF path metadata preserves original filenames, the zhou split JSON is
+# downloaded from Google Drive (original). Otherwise a compatible split JSON
+# is generated from the HF test split.
 # ---------------------------------------------------------------------------
 SUN_DIR="$DATA/sun397"
 if [ -d "$SUN_DIR/SUN397" ] && [ -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
   echo "[sun397] Already present, skipping."
 else
-  echo "[sun397] Downloading (~37GB — this will take a while)..."
+  echo "[sun397] Downloading from HuggingFace tanganke/sun397 (~37GB)..."
   mkdir -p "$SUN_DIR"
 
   if [ ! -d "$SUN_DIR/SUN397" ]; then
-    wget -c -L \
-      "http://vision.princeton.edu/projects/2010/SUN/SUN397.tar.gz" \
-      -O "$SUN_DIR/SUN397.tar.gz"
-    tar -xzf "$SUN_DIR/SUN397.tar.gz" -C "$SUN_DIR"
-    rm -f "$SUN_DIR/SUN397.tar.gz"
+    python - <<PYEOF
+import sys, os, json
+
+sys.path = [p for p in sys.path if p not in ("", ".")]
+import datasets as hfds
+
+sun_dir = os.path.join("$SUN_DIR", "SUN397")
+os.makedirs(sun_dir, exist_ok=True)
+
+generated_split = {"test": []}
+use_generated_split = False
+
+for split_name in ("train", "test"):
+    print(f"  Fetching {split_name} split...", flush=True)
+    ds = hfds.load_dataset(
+        "tanganke/sun397", split=split_name, trust_remote_code=True
+    ).cast_column("image", hfds.Image(decode=False))
+
+    label_names = ds.features["label"].names
+
+    class_counters = {}
+
+    for item in ds:
+        label_int = item["label"]
+        class_name = label_names[label_int]
+        letter = class_name[0].lower()
+
+        src_path = item["image"].get("path") if item["image"] else None
+
+        if src_path and "SUN397" in src_path:
+            # Original path preserved: e.g. ".../SUN397/a/abbey/sun_xxx.jpg"
+            idx = src_path.find("SUN397")
+            rel = src_path[idx + len("SUN397/"):]
+            dest = os.path.join(sun_dir, rel)
+        else:
+            # No original path — generate deterministic filename
+            use_generated_split = True
+            class_counters[class_name] = class_counters.get(class_name, 0) + 1
+            fname = f"img_{class_counters[class_name]:06d}.jpg"
+            rel = os.path.join(letter, class_name, fname)
+            dest = os.path.join(sun_dir, rel)
+
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if not os.path.exists(dest):
+            with open(dest, "wb") as f:
+                f.write(item["image"]["bytes"])
+
+        if split_name == "test":
+            generated_split["test"].append([
+                os.path.join("SUN397", rel), label_int, class_name
+            ])
+
+split_json_path = os.path.join("$SUN_DIR", "split_zhou_SUN397_hf.json")
+with open(split_json_path, "w") as f:
+    json.dump(generated_split, f)
+print(f"  Wrote generated split to {split_json_path}")
+print(f"  use_generated_split={use_generated_split}", flush=True)
+PYEOF
   fi
 
+  # Use original zhou split if HF preserved original paths; otherwise use generated one.
   if [ ! -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
-    gdrive "1y2RD81BYuiyvebdN-JymPfyWYcd8_MUq" "$SUN_DIR/split_zhou_SUN397.json"
+    if [ -f "$SUN_DIR/split_zhou_SUN397_hf.json" ]; then
+      # Check if HF generated split was needed or if original paths were preserved
+      # Try to get the original zhou split first (preferred for reproducibility)
+      echo "[sun397] Attempting to download original zhou split from Google Drive..."
+      gdrive "1y2RD81BYuiyvebdN-JymPfyWYcd8_MUq" "$SUN_DIR/split_zhou_SUN397.json" || {
+        echo "[sun397] Google Drive download failed; using HF-generated split."
+        cp "$SUN_DIR/split_zhou_SUN397_hf.json" "$SUN_DIR/split_zhou_SUN397.json"
+      }
+    fi
   fi
 
   echo "[sun397] Done."
