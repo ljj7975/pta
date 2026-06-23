@@ -261,8 +261,12 @@ fi
 
 # ---------------------------------------------------------------------------
 # food101  →  $DATA/food-101/
-#   images:  images/<class>/*.jpg
-#   split:   split_zhou_Food101.json
+#   images:  images/<class>/*.jpg      (via HuggingFace ethz/food101)
+#   split:   split_zhou_Food101.json   (via Google Drive)
+#
+# Images are downloaded from HuggingFace with decode=False so the original
+# filenames from the source archive are preserved — required for the zhou
+# split JSON to resolve image paths correctly.
 # ---------------------------------------------------------------------------
 FOOD_DIR="$DATA/food-101"
 if [ -d "$FOOD_DIR/images" ] && [ -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
@@ -272,11 +276,31 @@ else
   mkdir -p "$FOOD_DIR"
 
   if [ ! -d "$FOOD_DIR/images" ]; then
-    wget -c -L \
-      "https://data.vision.ee.ethz.ch/cvl/datasets_extra/food-101/food-101.tar.gz" \
-      -O "$DATA/food-101.tar.gz"
-    tar -xzf "$DATA/food-101.tar.gz" -C "$DATA"
-    rm -f "$DATA/food-101.tar.gz"
+    python - <<PYEOF
+import os
+import datasets as hfds
+
+img_dir = os.path.join("$FOOD_DIR", "images")
+os.makedirs(img_dir, exist_ok=True)
+
+for split_name in ("train", "validation"):
+    print(f"  Fetching {split_name} split...")
+    ds = hfds.load_dataset(
+        "ethz/food101", split=split_name, trust_remote_code=True
+    ).cast_column("image", hfds.Image(decode=False))
+
+    for item in ds:
+        src_path = item["image"]["path"]
+        # src_path is like "food-101/images/apple_pie/1005649.jpg"
+        # keep only the last two components: "apple_pie/1005649.jpg"
+        parts = src_path.replace("\\", "/").split("/")
+        rel = os.path.join(parts[-2], parts[-1])
+        dest = os.path.join(img_dir, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if not os.path.exists(dest):
+            with open(dest, "wb") as f:
+                f.write(item["image"]["bytes"])
+PYEOF
   fi
 
   if [ ! -f "$FOOD_DIR/split_zhou_Food101.json" ]; then
