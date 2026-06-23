@@ -277,7 +277,9 @@ else
 
   if [ ! -d "$FOOD_DIR/images" ]; then
     python - <<PYEOF
-import os
+import sys, os
+# Remove cwd from path so local datasets/ dir doesn't shadow the HF package
+sys.path = [p for p in sys.path if p not in ("", ".")]
 import datasets as hfds
 
 img_dir = os.path.join("$FOOD_DIR", "images")
