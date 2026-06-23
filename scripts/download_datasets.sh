@@ -293,7 +293,7 @@ for split_name in ("train", "validation"):
         src_path = item["image"]["path"]
         # src_path is like "food-101/images/apple_pie/1005649.jpg"
         # keep only the last two components: "apple_pie/1005649.jpg"
-        parts = src_path.replace("\\", "/").split("/")
+        parts = src_path.split("/")
         rel = os.path.join(parts[-2], parts[-1])
         dest = os.path.join(img_dir, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
