@@ -1,0 +1,17 @@
+=== START exp1_fixed_unique_patches Mon Jun 22 23:35:20 EDT 2026 ===
+=== DONE exp1_fixed_unique_patches exit=1 Mon Jun 22 23:41:43 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Mon Jun 22 23:41:43 EDT 2026 ===
+=== START exp1_fixed_unique_patches Tue Jun 23 21:16:32 EDT 2026 ===
+=== DONE exp1_fixed_unique_patches exit=1 Tue Jun 23 21:22:03 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Tue Jun 23 21:22:03 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Tue Jun 23 23:38:06 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Wed Jun 24 17:25:08 EDT 2026 ===
+=== DONE exp2_adaptive_tau_proto exit=120 Wed Jun 24 17:26:31 EDT 2026 ===
+=== START exp3_gaussian_prototypes Wed Jun 24 17:26:31 EDT 2026 ===
+=== DONE exp3_gaussian_prototypes exit=120 Wed Jun 24 17:26:33 EDT 2026 ===
+=== ALL DONE Wed Jun 24 17:26:33 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Wed Jun 24 17:26:59 EDT 2026 ===
+=== START exp1_fixed_unique_patches Wed Jun 24 17:28:27 EDT 2026 ===
+=== START exp2_adaptive_tau_proto Wed Jun 24 17:28:27 EDT 2026 ===
+=== START exp3_gaussian_prototypes Wed Jun 24 17:28:27 EDT 2026 ===
+=== DONE exp1_fixed_unique_patches exit=1 Wed Jun 24 17:35:13 EDT 2026 ===
