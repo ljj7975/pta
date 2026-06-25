@@ -275,7 +275,7 @@ else
   echo "[food101] Downloading..."
   mkdir -p "$FOOD_DIR"
 
-  if [ ! -d "$FOOD_DIR/images" ]; then
+  if [ ! -d "$FOOD_DIR/images" ] || [ -z "$(ls -A "$FOOD_DIR/images" 2>/dev/null)" ]; then
     pip install -q datasets
     python - <<PYEOF
 import sys, os
@@ -286,18 +286,22 @@ img_dir = os.path.join("$FOOD_DIR", "images")
 os.makedirs(img_dir, exist_ok=True)
 
 for split_name in ("train", "validation"):
-    print(f"  Fetching {split_name} split...")
+    print(f"  Fetching {split_name} split...", flush=True)
     ds = hfds.load_dataset(
-        "ethz/food101", split=split_name, trust_remote_code=True
+        "ethz/food101", split=split_name
     ).cast_column("image", hfds.Image(decode=False))
 
+    label_names = ds.features["label"].names
+
     for item in ds:
-        src_path = item["image"]["path"]
-        # src_path is like "food-101/images/apple_pie/1005649.jpg"
-        # keep only the last two components: "apple_pie/1005649.jpg"
-        parts = src_path.split("/")
-        rel = os.path.join(parts[-2], parts[-1])
-        dest = os.path.join(img_dir, rel)
+        # Use label feature for class directory (robust against path=None or bare filename)
+        class_name = label_names[item["label"]]
+        src_path = (item["image"] or {}).get("path") or ""
+        fname = os.path.basename(src_path)
+        if not fname:
+            print(f"  WARNING: no filename for label={item['label']}, skipping", flush=True)
+            continue
+        dest = os.path.join(img_dir, class_name, fname)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         if not os.path.exists(dest):
             with open(dest, "wb") as f:
