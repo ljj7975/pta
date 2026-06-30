@@ -1,0 +1,13 @@
+**/__pycache__
+.vscode
+data
+pta
+
+logs/
+outputs/
+
+*.pyc
+*.pyo
+.omo/
+.svn/
+.claude

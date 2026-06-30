@@ -1,0 +1,106 @@
+
+PTA vs MultiProtoPTA vs KProtoPTA Comparison — ViT-B/16 backbone
+Generated from: outputs/result.txt + logs/
+Last updated: 2026-06-08 (KProtoPTA full CD sweep complete)
+
+Paper reference: Huang et al., ICML 2026
+PTA paper CD avg (8 datasets): Caltech=96.1, Pets=93.7, Flowers=76.5,
+FGVC=27.2, Food=88.3, UCF=75.0, DTD=45.0, EuroSAT=61.9
+
+==============================================================================
+ Table 1: Cross-Domain Generalization (CD) — ViT-B/16
+==============================================================================
+
+  Dataset         PTA(ours) PTA(paper) MPPTA-v2  KProtoPTA  Δ(KP-PTA)  Δ(KP-MP)
+  -------------------------------------------------------------------------------
+  Caltech101        94.77     96.1      93.35      90.75      -4.02      -2.60
+  DTD               47.58     45.0      44.92      44.44      -3.14      -0.48
+  EuroSAT           61.40     61.9      56.91      61.26      -0.14     +4.35 ✓
+  FGVC Aircraft     25.71     27.2      24.21      24.00      -1.71      -0.21
+  Oxford Flowers    74.91     76.5      70.00      71.21      -3.70     +1.21 ✓
+  Oxford Pets       91.47     93.7      87.93      89.51      -1.96     +1.58 ✓
+  UCF101            72.80     75.0      66.38      69.89      -2.91     +3.51 ✓
+  Food101           86.30     88.3        --         --         --         --   (not run)
+  SUN397              --      69.2        --         --         --         --   (dataset missing)
+  Stanford Cars       --      68.6        --         --         --         --   (dataset missing)
+  -------------------------------------------------------------------------------
+  Avg (7 avail)     66.95     67.91     63.39      64.44      -2.51      +1.05
+
+[CD ANALYSIS]
+
+KProtoPTA (K=3 global EMA prototypes, fixed) vs MPPTA v2 (patch-level):
+  - EuroSAT: +4.35pp (56.91→61.26, nearly matches PTA 61.40)
+  - UCF101:  +3.51pp (66.38→69.89)
+  - Oxford Pets: +1.58pp, Oxford Flowers: +1.21pp
+  - KProtoPTA avg = 64.44% vs MPPTA v2 avg = 63.39% (+1.05pp net)
+
+Why KProtoPTA beats MPPTA on most datasets:
+  - Uses global CLS embeddings (same space CLIP was trained in)
+  - Preserves PTA's refinement formula: refined = normalize(alpha*text + (1-alpha)*proto)
+  - Scores as max_k(img @ refined_k.T) — stays in aligned text-image subspace
+  - PTA's soft update gate (all classes w >= 0.1) → more stable bank updates
+
+Why KProtoPTA still trails PTA by 2.51pp avg:
+  - With ~100 test samples/class, K=3 slots each get ~33 observations vs PTA's ~100
+  - Noisier EMA estimate per slot; sparse signal distributed over K prototypes
+  - max_k selection adds positive bias; may need re-calibrated 100× scalar
+
+Known bug fixed in KProtoPTA (was causing catastrophic -20pp regression):
+  - Initializing proto_banks to text_feat created t=0 logit doubling:
+    final = clip_logits + 100 * (clip_logits/100) = 2 * clip_logits
+  - Fix: initialize proto_banks to zeros (same as PTA's target_prototype init)
+  - This ensures the proto correction starts at 0 and grows naturally with data
+
+MPPTA v2 (patch-level) analysis:
+  - Patch embeddings not semantically aligned with text (CLIP trains [CLS] token, not patches)
+  - Greedy k-means on 196 patches adds noise; background patches corrupt prototypes
+  - Results in -5.13pp avg below PTA despite extensive hyperparameter tuning
+
+==============================================================================
+ Table 2: Out-of-Distribution (OOD) — ViT-B/16
+==============================================================================
+ Note: OOD results used old MPPTA v1. KProtoPTA OOD not yet run.
+
+  Dataset         PTA(ours) PTA(paper) MPPTA-v1   Notes
+  ---------------------------------------------------------------
+  ImageNet (I)       --       70.3      68.76     MPPTA close to paper
+  ImageNet-A (A)   16.35     61.2      16.34     Protocol mismatch (see below)
+  ImageNet-R (R)   12.45     80.8      62.92     Protocols differ (see below)
+  ImageNet-S (S)   50.67     51.0      49.36     Clean comparison (-1.31pp)
+  ImageNetV2 (V)     --       64.9        --     Dataset missing
+  ---------------------------------------------------------------
+
+[OOD PROTOCOL NOTE]
+  - A: Both methods get ~16% vs paper's ~61%.
+    200-class classifier protocol mismatch — paper uses 1000-class CLIP + remap.
+  - R: PTA 12.45% (200-class) vs MPPTA 62.92% (1000-class+remap fixed protocol).
+    NOT directly comparable. Re-run PTA R for fair comparison.
+  - S: Both ~50% ≈ paper 51% — 1000-class dataset, no protocol issue.
+
+==============================================================================
+ Architecture Summary
+==============================================================================
+
+  Method      | Core mechanism                           | Config dir
+  -------------------------------------------------------------------
+  PTA         | Single global EMA prototype per class    | configs/
+  MPPTA v2    | Patch-level k-means + cosine scoring     | configs_multi_proto/
+  KProtoPTA   | K=3 global EMA protos, PTA formula       | configs_kproto/
+              |   refined_k = normalize(α*text+(1-α)*p_k)|
+              |   logit = clip + 100*max_k(img@refined_k)|
+
+  Config keys (KProtoPTA):
+    K:              3    — prototypes per class
+    alpha:          0.01 — text anchor weight (same as PTA)
+    T:              20.0 — EMA temperature (same as PTA)
+    conf_threshold: adaptive per dataset (0.4–0.7)
+
+==============================================================================
+ Remaining Next Steps
+==============================================================================
+
+1. Run KProtoPTA OOD (I/A/R/S) to compare with MPPTA v1 OOD numbers
+2. Try K=1 for KProtoPTA (should reproduce PTA exactly — good sanity check)
+3. Re-run PTA R with fixed 1000-class eval protocol for apples-to-apples OOD
+4. Optional: obtain missing datasets (food-101, SUN397, Stanford Cars, ImageNetV2)
+
