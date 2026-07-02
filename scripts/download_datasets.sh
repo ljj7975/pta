@@ -326,6 +326,41 @@ fi
 # If HF path metadata preserves original filenames, the zhou split JSON is
 # downloaded from Google Drive (original). Otherwise a compatible split JSON
 # is generated from the HF test split.
+
+# The current implementation is invalid because it generates the following error during the experiments
+
+# Traceback (most recent call last):
+#   File "/share_98/projects/brandon/repos/pta/runner.py", line 143, in <module>
+#     main()
+#   File "/share_98/projects/brandon/repos/pta/runner.py", line 137, in main
+#     acc = adapter.run(test_loader, clip_model, clip_weights, dataset_name)
+#   File "/share_98/projects/brandon/repos/pta/models/exp1_fixed_unique_patches.py", line 181, in run
+#     for i, (images, target) in enumerate(tqdm(loader, desc=f"[Exp1] {dataset_name}")):
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/tqdm/std.py", line 1181, in __iter__
+#     for obj in iterable:
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/dataloader.py", line 633, in __next__
+#     data = self._next_data()
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/dataloader.py", line 1345, in _next_data
+#     return self._process_data(data)
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/dataloader.py", line 1371, in _process_data
+#     data.reraise()
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/_utils.py", line 644, in reraise
+#     raise exception
+# OSError: Caught OSError in DataLoader worker process 0.
+# Original Traceback (most recent call last):
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/_utils/worker.py", line 308, in _worker_loop
+#     data = fetcher.fetch(index)
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/_utils/fetch.py", line 51, in fetch
+#     data = [self.dataset[idx] for idx in possibly_batched_index]
+#   File "/share_98/projects/brandon/envs/pta/lib/python3.9/site-packages/torch/utils/data/_utils/fetch.py", line 51, in <listcomp>
+#     data = [self.dataset[idx] for idx in possibly_batched_index]
+#   File "/share_98/projects/brandon/repos/pta/datasets/utils.py", line 293, in __getitem__
+#     img0 = read_image(item.impath)
+#   File "/share_98/projects/brandon/repos/pta/datasets/utils.py", line 54, in read_image
+#     raise IOError('No file exists at {}'.format(path))
+# OSError: No file exists at ./data/sun397/SUN397/h/hospital/sun_boibbekkozsqzhgf.jpg
+
+
 # ---------------------------------------------------------------------------
 SUN_DIR="$DATA/sun397"
 if [ -d "$SUN_DIR/SUN397" ] && [ -f "$SUN_DIR/split_zhou_SUN397.json" ]; then
