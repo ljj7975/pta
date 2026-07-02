@@ -36,7 +36,8 @@ experiments=(
     "exp1_fixed_unique_patches configs_exp1 $CD_ALL cd_exp1_vit.log"
     "exp2_adaptive_tau_proto   configs_exp2 $CD_ALL cd_exp2_vit.log"
     "exp3_gaussian_prototypes  configs_exp3 $CD_ALL cd_exp3_vit.log"
-    # You can easily add more experiment lines here in the future
+    "exp4_full_fusion          configs_exp4 $CD_ALL cd_exp4_vit.log"
+    "exp5_tunable_fusion       configs_exp4 $CD_ALL cd_exp5_vit.log"
 )
 
 current_jobs=0
