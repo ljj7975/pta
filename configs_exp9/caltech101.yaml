@@ -1,0 +1,21 @@
+# Image-level prototype (PTA)
+alpha: 0.01
+T: 50.0
+# Patch-level Gaussian prototype
+match_threshold: 0.6
+max_K: 100
+conf_threshold: 0.5
+conf_margin_threshold: 0.05
+n_half: 15.0
+soft_nn_top_m: 4
+proto_alpha_max: 0.2
+quality_eps: 0.001
+exclude_pos: false
+patch_group_threshold: 0.9
+gaussian_ema: 0.1
+variance_min: 0.001
+variance_max: 1.0
+tau_text: 1.0
+tau_image_proto: 100.0
+tau_patch_proto: 20.0
+entropy_boost: 2.0
