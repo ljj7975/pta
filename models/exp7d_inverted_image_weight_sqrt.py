@@ -1,21 +1,20 @@
 """
-Experiment 5: Tunable Fusion (Configurable Branch Weights)
-===========================================================
+Experiment 7d: Inverted Per-Class Image-Level Weighting — Sqrt Mapping
+======================================================================
 
-Three-way fusion of CLIP text, image-level prototype, and patch-level
-Gaussian prototype — with configurable tau weights read from YAML:
+Same three-way fusion as Exp7, but with a **sqrt mapping** for the per-class
+adaptive image-level weight:
 
-    final_logits = tau_text       * clip_logits
-                 + tau_image_proto * image_proto_logits
-                 + tau_patch_proto * proto_alpha * quality_gate * raw_proto
+    tau_image[c] = tau_image_min + (tau_image_max - tau_image_min) * sqrt(proto_alpha[c])
 
-Same dual independent prototype systems as exp4:
-  - Image-level (PTA-style): per-class running prototype via update_text_features
-  - Patch-level (Gaussian-style): per-class prototype centers + variance via exp3
+The sqrt function grows faster than linear for small proto_alpha values,
+giving low-evidence classes a proportionally larger boost. This tests whether
+classes with few prototypes still benefit from non-negligible image-level
+weight, rather than waiting for evidence to accumulate.
 
-Key difference from exp4: tau_* weights are configurable via YAML, not hardcoded.
-The 100.0 multiplier on image_proto_logits (hardcoded in PTA and exp4) is removed
-since tau_image_proto provides that scaling.
+Exp7 (linear):     tau_image[c] = min + (max - min) * α
+Exp7d (sqrt):      tau_image[c] = min + (max - min) * sqrt(α)
+Exp7e (square):    tau_image[c] = min + (max - min) * α²
 """
 import os
 from typing import Dict
@@ -38,21 +37,24 @@ from models.pta import update_text_features
 from utils import cls_acc, get_clip_logits
 
 
-class Exp5TunableFusionAdapter(BaseAdapter):
-    """Three-way fusion with configurable tau weights (tau_text, tau_image_proto,
-    tau_patch_proto) read from YAML config instead of hardcoded."""
+class Exp7dInvertedImageWeightSqrtAdapter(BaseAdapter):
+    """Three-way fusion with sqrt-mapped per-class adaptive image-level weighting.
 
-    EXP_LABEL = "Exp5TunableFusion"
+    The image-level prototype weight (tau_image) is computed per class:
+      tau_image[c] = tau_image_min + (tau_image_max - tau_image_min) * sqrt(proto_alpha[c])
+
+    Compared to Exp7 (linear), sqrt gives low-evidence classes stronger image weight.
+    """
 
     def __init__(self, cfg):
         super().__init__(cfg)
-        # Read tunable tau weights from config with fallback defaults
         self.tau_text        = float(self.cfg.get("tau_text", 1.0))
-        self.tau_image_proto = float(self.cfg.get("tau_image_proto", 100.0))
+        self.tau_image_max   = float(self.cfg.get("tau_image_max", 150.0))
+        self.tau_image_min   = float(self.cfg.get("tau_image_min", 100.0))
         self.tau_patch_proto = float(self.cfg.get("tau_patch_proto", 20.0))
 
     # ------------------------------------------------------------------
-    # Patch-level prototype state (Gaussian, same as Exp3)
+    # Patch-level prototype state (Gaussian, same as Exp7)
     # ------------------------------------------------------------------
 
     def _make_class_state(self, D: int, device: torch.device) -> Dict:
@@ -71,11 +73,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
         match_threshold: float,
         max_K: int,
     ) -> Dict:
-        """
-        Same update logic as Exp3GaussianPrototypesAdapter._update_state().
-
-        Update prototype centers, appearance counts AND variance via EMA.
-        """
         centers    = state["centers"]
         apps       = state["appearance"]
         variances  = state["variance"]
@@ -88,7 +85,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
 
         grow_cap = max(max_K + int(patches_norm.shape[0]), max_K)
 
-        # ── Run incremental K-means ──────────────────────────────────
         if old_K == 0:
             init = _safe_normalize(global_feat, dim=-1).unsqueeze(0)
             updated_centers, appeared, matched, best_clusters, new_groups = (
@@ -105,7 +101,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
         all_vars = []
         all_apps = []
 
-        # ── Process "old" prototypes ─────────────────────────────────
         if old_K > 0:
             centers_old_norm = _safe_normalize(centers, dim=-1)
             for k in range(old_K):
@@ -119,7 +114,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
                     all_vars.append(variances[k])
                 all_apps.append(apps[k] + (1.0 if appeared[k] else 0.0))
         else:
-            # Seed prototype
             mask = matched & (best_clusters == 0)
             if mask.any():
                 residuals = patches_norm[mask] - _safe_normalize(init)
@@ -132,7 +126,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
             all_vars.append(seed_var)
             all_apps.append(1.0)
 
-        # ── Process new prototypes ───────────────────────────────────
         if n_new > 0:
             for idx, group_idx in enumerate(new_groups):
                 proto_idx = (old_K if old_K > 0 else 1) + idx
@@ -152,7 +145,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
         updated_vars = torch.stack(all_vars, dim=0)
         updated_apps = torch.tensor(all_apps, device=apps.device, dtype=torch.float)
 
-        # ── Prune to max_K by appearance weight ──────────────────────
         n_images_next = max(int(state.get("n_images", 0)) + 1, 1)
         if updated_centers.shape[0] > max_K:
             app_w = updated_apps / float(n_images_next)
@@ -180,14 +172,12 @@ class Exp5TunableFusionAdapter(BaseAdapter):
         clip_weights,
         dataset_name: str,
     ) -> float:
-        # ── Backbone check ──────────────────────────────────────────
         if not hasattr(clip_model.visual, "positional_embedding"):
             raise ValueError(
-                "Exp5TunableFusion requires a ViT backbone (ViT-B/16) for patch extraction. "
-                f"Got: {type(clip_model.visual).__name__}"
+                "Exp7dInvertedImageWeightSqrt requires a ViT backbone (ViT-B/16) "
+                f"for patch extraction. Got: {type(clip_model.visual).__name__}"
             )
 
-        # ── Config ──────────────────────────────────────────────────
         max_K              = int(self.cfg.get("max_K", 100))
         match_thresh       = float(self.cfg.get("match_threshold", 0.60))
         conf_thresh        = float(self.cfg.get("conf_threshold", 0.5))
@@ -201,27 +191,23 @@ class Exp5TunableFusionAdapter(BaseAdapter):
         variance_min       = float(self.cfg.get("variance_min", 0.001))
         variance_max       = float(self.cfg.get("variance_max", 1.0))
 
-        # PTA-style image-level update params
         alpha_pta = float(self.cfg.get("alpha", 0.01))
         T         = float(self.cfg.get("T", 50.0))
 
-        # Tunable fusion weights
-        tau_text       = self.tau_text
-        tau_image_proto = self.tau_image_proto
+        tau_text        = self.tau_text
+        tau_image_max   = self.tau_image_max
+        tau_image_min   = self.tau_image_min
         tau_patch_proto = self.tau_patch_proto
 
         os.makedirs("outputs", exist_ok=True)
 
-        text_proto = _safe_normalize(clip_weights.t().float())  # [C, D]
+        text_proto = _safe_normalize(clip_weights.t().float())
         C, D       = text_proto.shape
         device     = text_proto.device
 
-        # ── Dual prototype systems ──────────────────────────────────
-        # Image-level (PTA-style)
-        refine_feature   = clip_weights.t().float()   # [C, D]
+        refine_feature   = clip_weights.t().float()
         target_prototype = torch.zeros_like(refine_feature).to(device)
 
-        # Patch-level (Gaussian-style)
         states = [self._make_class_state(D, device) for _ in range(C)]
 
         max_batches = int(os.environ.get("MAX_BATCHES", "0"))
@@ -229,7 +215,7 @@ class Exp5TunableFusionAdapter(BaseAdapter):
 
         with torch.no_grad():
             for i, (images, target) in enumerate(
-                tqdm(loader, desc=f"[Exp5] {dataset_name}")
+                tqdm(loader, desc=f"[Exp7d] {dataset_name}")
             ):
                 if max_batches > 0 and i >= max_batches:
                     break
@@ -239,14 +225,12 @@ class Exp5TunableFusionAdapter(BaseAdapter):
                     images = images.to(device)
                 target = target.to(device)
 
-                # 1) CLIP forward
                 image_features, clip_logits, _, _, _ = get_clip_logits(
                     images, clip_model, clip_weights
                 )
                 feat      = image_features.squeeze(0).float()
                 feat_norm = _safe_normalize(feat)
 
-                # 2) Update image-level prototype (PTA-style)
                 soft_logits = F.softmax(clip_logits, dim=-1)
                 refine_feature, target_prototype = update_text_features(
                     image_features,
@@ -257,13 +241,10 @@ class Exp5TunableFusionAdapter(BaseAdapter):
                     T=T,
                 )
 
-                # 3) Image-level proto logits
-                # NOTE: no hardcoded 100.0 scaling — tau_image_proto handles it
                 image_proto_logits = (
                     image_features.half() @ refine_feature.half().T
-                )  # [1, C]
+                )
 
-                # 4) Patch-level Gaussian prototype scores
                 patch_embs = _extract_patch_embeddings(
                     images, clip_model, exclude_pos=exclude_pos
                 )
@@ -284,7 +265,6 @@ class Exp5TunableFusionAdapter(BaseAdapter):
                             variance_min=variance_min,
                         )
 
-                # 5) Adaptive evidence weighting (same as exp3/exp4)
                 proto_alpha = torch.tensor(
                     [
                         min(alpha_max, _alpha_from_evidence(
@@ -297,17 +277,19 @@ class Exp5TunableFusionAdapter(BaseAdapter):
                 proto_var    = raw_proto.var()
                 quality_gate = proto_var / (proto_var + quality_eps)
 
-                # 6) Three-way fusion with tunable weights
+                # ── SQRT mapping (key difference from Exp7) ──────────────
+                # tau_image[c] = tau_image_min + (tau_image_max - tau_image_min) * sqrt(proto_alpha[c])
+                tau_image_per_class = tau_image_min + (tau_image_max - tau_image_min) * torch.sqrt(proto_alpha + 1e-10)
+
                 final_logits = (
                     tau_text * clip_logits.clone()
-                    + tau_image_proto * image_proto_logits
+                    + tau_image_per_class.unsqueeze(0) * image_proto_logits
                     + tau_patch_proto * proto_alpha * quality_gate * raw_proto.unsqueeze(0)
                 )
 
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
-                # 7) Online memory update (patch-level, same confidence gate as exp3)
                 pred_conf = F.softmax(clip_logits, dim=-1).squeeze(0)
                 top2_vals, top2_idx = pred_conf.topk(min(2, C))
                 best_conf   = float(top2_vals[0].item())
@@ -323,27 +305,22 @@ class Exp5TunableFusionAdapter(BaseAdapter):
 
                 if i % 500 == 0:
                     running = sum(accuracies) / len(accuracies)
-                    print(f"---- {self.EXP_LABEL} {running:.2f}% ----")
+                    print(f"---- Exp7d {running:.2f}% ----")
 
         final_acc = sum(accuracies) / len(accuracies)
-        print(f"---- {self.EXP_LABEL} FINAL {final_acc:.2f}% ----")
+        print(f"---- Exp7d FINAL {final_acc:.2f}% ----")
 
         with open("outputs/result.txt", "a") as f:
             f.write(
-                f"{self.EXP_LABEL}'s performance on {dataset_name}: "
+                f"Exp7dInvertedImageWeightSqrt's performance on {dataset_name}: "
                 f"Top1- {final_acc:.2f}.\n"
             )
 
         return final_acc
 
     def refine_with(self, clip_model, clip_weights, data_loader, dataset_name):
-        """Convenience alias for run()."""
         return self.run(data_loader, clip_model, clip_weights, dataset_name)
 
 
-def build(cfg: dict) -> Exp5TunableFusionAdapter:
-    """Factory function — called by runner.py via dynamic import."""
-    return Exp5TunableFusionAdapter(cfg)
-
-
-__all__ = ["Exp5TunableFusionAdapter", "build"]
+def build(cfg: dict) -> Exp7dInvertedImageWeightSqrtAdapter:
+    return Exp7dInvertedImageWeightSqrtAdapter(cfg)
