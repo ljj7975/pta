@@ -14,6 +14,10 @@ import os
 import random
 import argparse
 
+# Must be set BEFORE torch import for deterministic CuBLAS
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+import numpy as np
 import torch
 import clip
 
@@ -101,7 +105,14 @@ def main():
 
     # ------------------------------------------------------------------ setup
     random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
     os.makedirs("outputs", exist_ok=True)
 
@@ -130,7 +141,7 @@ def main():
         adapter = adapter_module.build(cfg)
 
         test_loader, classnames, template = build_test_data_loader(
-            dataset_name, args.data_root, preprocess
+            dataset_name, args.data_root, preprocess, shuffle=False
         )
         clip_weights = clip_classifier(classnames, template, clip_model)
 

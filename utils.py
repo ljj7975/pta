@@ -156,10 +156,10 @@ def get_imagenet_subset_remap(dataset_name, root_path, subset_classnames):
     return imagenet_classnames, subset_to_imagenet, imagenet_to_subset
 
 
-def build_test_data_loader(dataset_name, root_path, preprocess, shuffle=True):
+def build_test_data_loader(dataset_name, root_path, preprocess, shuffle=False):
     if dataset_name == 'I':
         dataset = ImageNet(root_path, preprocess)
-        test_loader = torch.utils.data.DataLoader(dataset.test, batch_size=1, num_workers=8, shuffle=shuffle)
+        test_loader = torch.utils.data.DataLoader(dataset.test, batch_size=1, num_workers=0, shuffle=shuffle)
         return test_loader, dataset.classnames, dataset.template
 
     elif dataset_name in ['A', 'V', 'R', 'S']:

@@ -336,10 +336,12 @@ def build_data_loader(
         dataset_wrapper = DatasetWrapper
 
     # Build data loader
+    # NOTE: num_workers=0 for test loaders to ensure deterministic sample ordering
+    # (multi-worker dataloaders have non-deterministic ordering even with shuffle=False)
     data_loader = torch.utils.data.DataLoader(
         dataset_wrapper(data_source, input_size=input_size, transform=tfm, is_train=is_train),
         batch_size=batch_size,
-        num_workers=8,
+        num_workers=0,
         shuffle=shuffle,
         drop_last=False,
         pin_memory=(torch.cuda.is_available())

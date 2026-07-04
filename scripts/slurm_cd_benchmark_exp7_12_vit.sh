@@ -42,6 +42,7 @@ source /shared/miniconda3/etc/profile.d/conda.sh
 conda activate "$HOME_DIR/envs/pta"
 
 export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 DATASETS=(caltech101 dtd eurosat fgvc oxford_flowers oxford_pets ucf101)
 

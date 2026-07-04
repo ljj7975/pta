@@ -37,6 +37,7 @@ source /shared/miniconda3/etc/profile.d/conda.sh
 conda activate "$HOME_DIR/envs/pta"
 
 export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 echo "Running Exp2 CD benchmark for dataset: $DATASET (array task $SLURM_ARRAY_TASK_ID)"
 
