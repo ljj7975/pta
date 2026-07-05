@@ -10,6 +10,15 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import InterpolationMode
 BICUBIC = InterpolationMode.BICUBIC
 
+
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker for deterministic behavior with num_workers > 0."""
+    import random
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
 def select_confident_samples(logits, top):
     batch_entropy = -(logits.softmax(1) * logits.log_softmax(1)).sum(1)
     idx = torch.argsort(batch_entropy, descending=False)[:int(batch_entropy.size()[0] * top)]
@@ -156,10 +165,10 @@ def get_imagenet_subset_remap(dataset_name, root_path, subset_classnames):
     return imagenet_classnames, subset_to_imagenet, imagenet_to_subset
 
 
-def build_test_data_loader(dataset_name, root_path, preprocess, shuffle=False):
+def build_test_data_loader(dataset_name, root_path, preprocess, shuffle=True):
     if dataset_name == 'I':
         dataset = ImageNet(root_path, preprocess)
-        test_loader = torch.utils.data.DataLoader(dataset.test, batch_size=1, num_workers=0, shuffle=shuffle)
+        test_loader = torch.utils.data.DataLoader(dataset.test, batch_size=1, num_workers=8, shuffle=shuffle, worker_init_fn=worker_init_fn)
         return test_loader, dataset.classnames, dataset.template
 
     elif dataset_name in ['A', 'V', 'R', 'S']:

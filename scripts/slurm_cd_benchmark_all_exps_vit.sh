@@ -7,7 +7,7 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --exclude=node1
-#SBATCH --time=24:00:00
+#SBATCH --time=5:00:00
 #SBATCH --array=0-111
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/all_exps_vit_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/all_exps_vit_%x-%A_%a.err

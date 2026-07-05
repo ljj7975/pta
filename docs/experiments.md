@@ -20,6 +20,86 @@ The core pipeline is shared across all three experiments:
 
 ---
 
+## Dependency Tree
+
+All experiments branch from the original PTA method (`models/pta.py`). The diagrams below show the import dependency chain — each node imports from its parent(s).
+
+### Branch 1: Multi-Proto (Patch-Level)
+
+These experiments build on `multi_proto_pta_base.py` (shared utilities: normalize, incremental k-means, patch extraction).
+
+```mermaid
+graph LR
+    B["multi_proto_pta_base.py<br/>Shared utilities"]
+    C["multi_proto_pta.py<br/>Multi-prototype PTA"]
+    D["exp1<br/>Farthest-first patch selection"]
+    E["exp2<br/>50/50 softmax blending"]
+    F["exp3<br/>Gaussian prototypes"]
+
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+
+    style B fill:#6c757d,color:#fff
+    style C fill:#17a2b8,color:#fff
+    style F fill:#28a745,color:#fff
+```
+
+### Branch 2: Three-Way Fusion Family
+
+These experiments import from **both** `pta.py` (image-level EMA) **and** `exp3` (Gaussian patch prototypes), fusing three signals: CLIP text + image-level prototype + patch-level prototype.
+
+```mermaid
+graph LR
+    A["pta.py<br/>Image-level EMA"]
+    F["exp3<br/>Gaussian prototypes"]
+    G["exp4<br/>Hardcoded weights"]
+    H["exp5<br/>Configurable τ"]
+    I["exp6<br/>τ ∝ 1/proto_alpha"]
+    J["exp7<br/>τ ∝ proto_alpha"]
+    K["exp7d<br/>τ ∝ √proto_alpha"]
+    L["exp7e<br/>τ ∝ proto_alpha²"]
+    M["exp8<br/>τ_patch = 500"]
+    N["exp9<br/>Entropy modulation"]
+    O["exp10<br/>Soft patch gate"]
+    P["exp11<br/>Exp5 repeat"]
+    Q["exp12<br/>Quality → EMA rate"]
+
+    A --> G & H & I & J & M & N & O & Q
+    F --> G & H & I & J & M & N & O & Q
+    H --> P
+    J --> K & L
+
+    style A fill:#2d7d9a,color:#fff
+    style F fill:#28a745,color:#fff
+    style H fill:#ffc107,color:#000
+```
+
+### Import Dependency Summary
+
+| File | Imports from | Relationship |
+|---|---|---|
+| `pta.py` | `base.py`, `utils.py` | **Root** — image-level EMA prototypes |
+| `multi_proto_pta_base.py` | `base.py`, `utils.py` | **Shared utilities** — normalize, k-means, patch extract |
+| `multi_proto_pta.py` | `multi_proto_pta_base` | Patch-level prototypes + CLIP text |
+| `exp1` | `multi_proto_pta_base` | Farthest-first patch selection |
+| `exp2` | `multi_proto_pta_base` | 50/50 softmax score blending |
+| `exp3` | `multi_proto_pta_base` | Gaussian prototypes (center + variance) |
+| `exp4` | `pta` + `exp3` | 3-way fusion (hardcoded weights) |
+| `exp5` | `pta` + `exp3` | 3-way fusion (configurable τ) |
+| `exp6` | `pta` + `exp3` | Per-class adaptive weight (inverse) |
+| `exp7` | `pta` + `exp3` | Per-class adaptive weight (direct) |
+| `exp7d` | `pta` + `exp3` | Exp7 with sqrt mapping |
+| `exp7e` | `pta` + `exp3` | Exp7 with square mapping |
+| `exp8` | `pta` + `exp3` | 25× patch boost |
+| `exp9` | `pta` + `exp3` | Entropy-guided τ modulation |
+| `exp10` | `pta` + `exp3` | Soft per-class proportional gate |
+| `exp11` | `exp5` (subclass) | Same algo, different config |
+| `exp12` | `pta` + `exp3` | Patch quality → EMA update rate |
+
+---
+
 ## Experiment 1: Fixed Unique Patches
 
 **File**: `models/exp1_fixed_unique_patches.py`  

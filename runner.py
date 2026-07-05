@@ -141,7 +141,7 @@ def main():
         adapter = adapter_module.build(cfg)
 
         test_loader, classnames, template = build_test_data_loader(
-            dataset_name, args.data_root, preprocess, shuffle=False
+            dataset_name, args.data_root, preprocess, shuffle=True
         )
         clip_weights = clip_classifier(classnames, template, clip_model)
 

@@ -77,6 +77,14 @@ def listdir_nohidden(path, sort=False):
     return items
 
 
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker for deterministic behavior with num_workers > 0."""
+    import random
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
 class Datum:
     """Data instance which defines the basic attributes.
 
@@ -336,15 +344,14 @@ def build_data_loader(
         dataset_wrapper = DatasetWrapper
 
     # Build data loader
-    # NOTE: num_workers=0 for test loaders to ensure deterministic sample ordering
-    # (multi-worker dataloaders have non-deterministic ordering even with shuffle=False)
     data_loader = torch.utils.data.DataLoader(
         dataset_wrapper(data_source, input_size=input_size, transform=tfm, is_train=is_train),
         batch_size=batch_size,
-        num_workers=0,
+        num_workers=8,
         shuffle=shuffle,
         drop_last=False,
-        pin_memory=(torch.cuda.is_available())
+        pin_memory=(torch.cuda.is_available()),
+        worker_init_fn=worker_init_fn
     )
     assert len(data_loader) > 0
 

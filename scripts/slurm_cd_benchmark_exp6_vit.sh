@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-DATASETS=(caltech101 dtd eurosat fgvc oxford_flowers oxford_pets Ducf101)
+DATASETS=(caltech101 dtd eurosat fgvc oxford_flowers oxford_pets ucf101)
 DATASET=${DATASETS[$SLURM_ARRAY_TASK_ID]}
 
 HOME_DIR=/share_98/projects/$USER

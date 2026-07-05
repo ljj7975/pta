@@ -38,6 +38,7 @@ experiments=(
     "exp3_gaussian_prototypes  configs_exp3 $CD_ALL cd_exp3_vit.log"
     "exp4_full_fusion          configs_exp4 $CD_ALL cd_exp4_vit.log"
     "exp5_tunable_fusion       configs_exp4 $CD_ALL cd_exp5_vit.log"
+    "exp6_adaptive_image_weight configs_exp6 $CD_ALL cd_exp6_vit.log"
 )
 
 current_jobs=0
