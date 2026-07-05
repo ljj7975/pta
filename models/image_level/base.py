@@ -36,9 +36,10 @@ class BaseImageLevel(ABC):
         """Compute logits from image features and refined text features.
 
         ``refine_feature`` is the output of ``update_prototypes``.
-        Returns ``image_features @ refine_feature.T``.
+        Both inputs are cast to fp16 before the matmul to match the
+        original PTA precision (CLIP image features are fp16).
         """
-        return image_features @ refine_feature.T
+        return image_features.half() @ refine_feature.half().T
 
     def init_state(self, text_features):
         """Return initial prototype state (zero vector matching text_features shape)."""

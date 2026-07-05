@@ -153,9 +153,11 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         n_half             = float(self.cfg.get("n_half", 15.0))
         alpha_max          = float(self.cfg.get("proto_alpha_max", 0.2))
 
-        # PTA-style image-level update params
-        alpha_pta = float(self.cfg.get("alpha", 0.01))
-        T         = float(self.cfg.get("T", 50.0))
+        # PTA-style image-level update params (read from nested image_level
+        # config; fall back to flat keys for backward compat)
+        _il_cfg = self.cfg.get("image_level", {})
+        alpha_pta = float(_il_cfg.get("alpha", self.cfg.get("alpha", 0.01)))
+        T         = float(_il_cfg.get("T",     self.cfg.get("T",     20.0)))
 
         os.makedirs("outputs", exist_ok=True)
 
