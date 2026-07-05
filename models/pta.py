@@ -1,9 +1,10 @@
 import os
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 from models.base import BaseAdapter
+from models.image_level import create as create_image_level
+from models.fusion import WeightedFusion
 from utils import get_clip_logits, cls_acc
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -20,65 +21,6 @@ from utils import get_clip_logits, cls_acc
 #   3. Online updates use exponential moving average (controlled by T parameter)
 #   4. Final prediction fuses zero-shot logits with refined prototype logits
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def update_text_features(
-    image_feature: torch.Tensor,
-    probs: torch.Tensor,
-    text_features: torch.Tensor,
-    target_prototype: torch.Tensor,
-    alpha: float = 0.01,
-    T: float = 20.0,
-):
-    """
-    Online prototype update step.
-
-    For each class whose soft-max probability exceeds 0.1, blend the current
-    image feature into the running prototype, then form the refined text
-    feature as a convex combination of the original text embedding and the
-    prototype.
-
-    Args:
-        image_feature:   (1, D) L2-normalised image embedding from CLIP vision encoder.
-        probs:           (1, C) soft-max distribution over classes (from zero-shot logits).
-        text_features:   (C, D) original CLIP text embeddings (class names via text encoder).
-        target_prototype:(C, D) running prototype bank (mutated in-place with EMA).
-        alpha:           Weight on original text features (0.0 = pure prototype, 1.0 = no update).
-        T:               Temperature controlling prototype update rate.
-                         Higher T → more conservative updates (exponential decay).
-
-    Returns:
-        refined_text:    (C, D) L2-normalised updated text features (text + prototype blend).
-        target_prototype:(C, D) updated prototype bank (after EMA step).
-    """
-    # Extract soft probabilities [C] from batch dim
-    w = probs.squeeze(0)                          # [C] — class confidence from zero-shot
-    
-    # Compute update weights via exponential decay: w_new = 1 - exp(-w / T)
-    # Only apply to high-confidence classes (w >= 0.1)
-    w_new = torch.zeros_like(w)                   # [C] — init zero
-    mask = w >= 1e-1                              # [C] bool — which classes to update
-    w_new[mask] = 1 - torch.exp(-w[mask] / T)     # [C] — update weight for confident classes
-    w_new = w_new.unsqueeze(1)                    # [C, 1] — reshape for broadcast
-
-    # EMA update: blend old prototype with new image feature
-    # target_prototype[c] = (1 - w_new[c]) * old_proto[c] + w_new[c] * image_feature
-    # High w_new = strong update; low w_new = conservative update
-    target_prototype[mask] = (
-        (1 - w_new[mask]) * target_prototype[mask]
-        + w_new[mask] * image_feature.squeeze(0)
-    )
-
-    # Form refined text features as a blend of original CLIP text + updated prototype
-    # alpha controls the balance:
-    #   alpha=1.0 → pure original text (no adaptation)
-    #   alpha=0.0 → pure prototype (full adaptation)
-    refined_text = alpha * text_features + (1 - alpha) * target_prototype  # [C, D]
-    
-    # L2-normalize so cosine similarity = dot product
-    refined_text = refined_text / refined_text.norm(dim=-1, keepdim=True)  # [C, D]
-
-    return refined_text, target_prototype
 
 
 class PTAAdapter(BaseAdapter):
@@ -99,6 +41,32 @@ class PTAAdapter(BaseAdapter):
     Reference: Huang et al., ICML 2026 — https://arxiv.org/abs/2604.21360
     """
 
+    def __init__(self, cfg):
+        super().__init__(cfg)
+
+        # ── Backward-compatible nested config ──────────────────────────────
+        # Flat configs (alpha, T at root level) are still used by some
+        # callers.  Propagate them into the nested "image_level" sub-dict
+        # so the PTAImageLevel component can find them.
+        image_level_cfg = cfg.get("image_level", {})
+        if "alpha" not in image_level_cfg and "alpha" in cfg:
+            image_level_cfg["alpha"] = cfg["alpha"]
+        if "T" not in image_level_cfg and "T" in cfg:
+            image_level_cfg["T"] = cfg["T"]
+        cfg["image_level"] = image_level_cfg
+
+        # ── Image-level prototype component ────────────────────────────────
+        self.image_level = create_image_level(cfg)
+
+        # ── Fusion component ───────────────────────────────────────────────
+        # PTA defaults: tau_text=1.0, tau_image_proto=100.0, tau_patch_proto=0.0
+        fusion_cfg = cfg.get("fusion", {})
+        fusion_cfg.setdefault("tau_text", 1.0)
+        fusion_cfg.setdefault("tau_image_proto", 100.0)
+        fusion_cfg.setdefault("tau_patch_proto", 0.0)
+        cfg["fusion"] = fusion_cfg
+        self.fusion = WeightedFusion(cfg)
+
     def run(
         self,
         loader,
@@ -109,65 +77,65 @@ class PTAAdapter(BaseAdapter):
         """
         Run PTA on test set. Per-dataset config is loaded from self.cfg.
         """
-        # Load hyperparameters from per-dataset YAML config
-        alpha = self.cfg.get("alpha", 0.01)
-        T = float(self.cfg.get("T", 20.0))
-
         os.makedirs("outputs", exist_ok=True)
 
         with torch.no_grad():
-            accuracies = []                                           # Track per-sample accuracy
-            
+            accuracies = []                                     # Track per-sample accuracy
+
             # Initialize refined text features as original CLIP text embeddings
-            # clip_weights: [D, C] → transpose to [C, D]
-            refine_feature = clip_weights.t()                         # [C, D] — text embeddings
-            
-            # Initialize prototype bank with zeros (will be filled by first samples)
-            # Will accumulate via EMA during the test loop
-            target_prototype = torch.zeros_like(refine_feature).cuda()  # [C, D]
+            # clip_weights: [D, C] -> transpose to [C, D]
+            refine_feature = clip_weights.t().float()           # [C, D]
+
+            # Initialize prototype bank with zeros (filled by first samples via EMA)
+            target_prototype = self.image_level.init_state(
+                refine_feature
+            )                                                   # [C, D]
+
+            # Support early termination via MAX_BATCHES env var
+            max_batches = os.environ.get("MAX_BATCHES")
+            if max_batches is not None:
+                max_batches = int(max_batches)
 
             # Main evaluation loop: process one test sample per iteration
             for i, (images, target) in enumerate(
                 tqdm(loader, desc=f"[PTA] {dataset_name}")
             ):
+                # Early termination check
+                if max_batches is not None and i >= max_batches:
+                    break
+
                 # ── ZERO-SHOT PREDICTION ───────────────────────────────────
-                # Get image features from CLIP vision encoder + zero-shot logits
                 image_features, clip_logits, _, _, _ = get_clip_logits(
                     images, clip_model, clip_weights
                 )
-                # image_features: [1, D] — L2-normalized CLIP image embedding
-                # clip_logits: [1, C] — zero-shot logits (image @ text^T)
-                
-                target = target.cuda()  # Ground truth label
+
+                target = target.cuda()
 
                 # ── ONLINE PROTOTYPE UPDATE ────────────────────────────────
-                # Convert logits to class probabilities (soft labels)
-                soft_logits = F.softmax(clip_logits, dim=-1)  # [1, C] — soft probabilities
-                
-                # Update the running prototype and refined text features
-                # High-confidence classes get their prototypes updated via EMA
-                refine_feature, target_prototype = update_text_features(
-                    image_features,
-                    soft_logits.half(),
-                    refine_feature,
-                    target_prototype,
-                    alpha=alpha,      # Balance: original text vs. prototype
-                    T=T,              # Decay temperature for update rate
+                # PTAImageLevel applies softmax internally; pass raw logits.
+                refine_feature, target_prototype = (
+                    self.image_level.update_prototypes(
+                        image_features,
+                        clip_logits,
+                        refine_feature,
+                        target_prototype,
+                    )
                 )
-                # refine_feature: [C, D] — updated text features (text + prototype blend)
-                # target_prototype: [C, D] — updated prototype bank (after EMA)
 
                 # ── FUSED PREDICTION ───────────────────────────────────────
-                # Combine zero-shot logits with logits from refined text features
-                final_logits = clip_logits.clone()  # [1, C] — start with zero-shot
-                
-                # Add contribution from refined features (with large scaling factor 100.0)
-                # This is cosine similarity: image @ refined_text^T, scaled up
-                final_logits += 100.0 * image_features.half() @ refine_feature.half().T  # [1, C]
-                # Scaling factor is large (100.0) to ensure refined branch is meaningful
+                # Compute image-level prototype logits
+                image_proto_logits = self.image_level.compute_logits(
+                    image_features, refine_feature
+                )
+
+                # Fuse zero-shot logits with prototype logits
+                # WeightedFusion handles tau weights and tensor cloning.
+                final_logits = self.fusion.forward(
+                    clip_logits.clone(), image_proto_logits, None
+                )
 
                 # ── MEASURE ACCURACY ───────────────────────────────────────
-                acc = cls_acc(final_logits, target)  # Compute top-1 accuracy
+                acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
                 # Periodic logging (every 1000 samples)
@@ -177,11 +145,11 @@ class PTAAdapter(BaseAdapter):
                         f"{sum(accuracies)/len(accuracies):.2f}. ----"
                     )
 
-        # ── FINAL RESULTS ──────────────────────────────────────────────
-        final_acc = sum(accuracies) / len(accuracies)  # Average accuracy over all test samples
+        # ── FINAL RESULTS ──────────────────────────────────────────────────
+        final_acc = sum(accuracies) / len(accuracies)
         print(f"---- PTA's test accuracy: {final_acc:.2f}. ----\n")
 
-        # Append results to output file (append mode, so multiple runs accumulate)
+        # Append results to output file (append mode, multiple runs accumulate)
         with open("outputs/result.txt", "a") as f:
             f.write(
                 f"PTA's performance on {dataset_name}: Top1- {final_acc:.2f}.\n"
@@ -193,7 +161,7 @@ class PTAAdapter(BaseAdapter):
 def build(cfg: dict) -> PTAAdapter:
     """
     Factory function: instantiate a PTAAdapter with the given config.
-    
+
     Called by runner.py via dynamic import:
       adapter_module = __import__('models.pta', fromlist=['build'])
       adapter = adapter_module.build(cfg)

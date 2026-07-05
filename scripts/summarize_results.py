@@ -35,7 +35,7 @@ def parse(path: str) -> Dict[str, Dict[str, float]]:
     return data
 
 
-def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]], out_path: str = "outputs/exp_results.txt") -> None:
+def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]], out_path: str = "outputs/exp_results.txt", ignore_datasets: Optional[List[str]] = None) -> None:
     if methods:
         # case-insensitive substring match
         keys = [
@@ -52,8 +52,11 @@ def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]],
             f.write(msg + "\n")
         return
 
-    # collect all datasets that appear
-    all_datasets = sorted({d for k in keys for d in data[k]})
+    # collect all datasets that appear, minus ignored ones
+    ignore = {d.lower() for d in ignore_datasets} if ignore_datasets else set()
+    all_datasets = sorted(
+        {d for k in keys for d in data[k] if d.lower() not in ignore}
+    )
     col_w = 14
 
     lines: List[str] = []
@@ -82,11 +85,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", default="outputs/result.txt")
     parser.add_argument("--methods", nargs="*", help="filter by method name substring")
+    parser.add_argument("--ignore-datasets", nargs="*", help="datasets to exclude from the table (e.g., ucf101 dtd)")
     parser.add_argument("--out", default="outputs/exp_results.txt", help="output file (overwritten)")
     args = parser.parse_args()
 
     data = parse(args.file)
-    print_table(data, args.methods, args.out)
+    print_table(data, args.methods, args.out, args.ignore_datasets)
 
 
 if __name__ == "__main__":

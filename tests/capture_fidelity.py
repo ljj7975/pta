@@ -126,6 +126,11 @@ def main():
     from utils import cls_acc as _original_cls_acc
     import utils as _utils_mod
 
+    # Also need to patch every adapter module that imports cls_acc via
+    # "from utils import cls_acc", since those modules have their own
+    # reference independent from _utils_mod.cls_acc.
+    _adapter_mod = adapter_module
+
     per_sample_accuracies = []
 
     def patched_cls_acc(output, target, topk=1):
@@ -134,12 +139,33 @@ def main():
         return result
 
     _utils_mod.cls_acc = patched_cls_acc
+    if hasattr(_adapter_mod, "cls_acc"):
+        _adapter_mod.cls_acc = patched_cls_acc
+
+    # Also patch the function directly in the adapter's globals if possible
+    if hasattr(adapter, "run"):
+        run_globals = adapter.run.__globals__
+        if "cls_acc" in run_globals:
+            run_globals["cls_acc"] = patched_cls_acc
+
+    # Limit the test loader to max_batches batches
+    def limited_loader(loader, max_batches):
+        for i, batch in enumerate(loader):
+            if i >= max_batches:
+                break
+            yield batch
+
+    limited_test_loader = limited_loader(test_loader, args.max_batches)
 
     # ------------------------------------------------------------------ run
     try:
-        adapter.run(test_loader, clip_model, clip_weights, dataset_name)
+        adapter.run(limited_test_loader, clip_model, clip_weights, dataset_name)
     finally:
         _utils_mod.cls_acc = _original_cls_acc
+        if hasattr(_adapter_mod, "cls_acc"):
+            _adapter_mod.cls_acc = _original_cls_acc
+        if hasattr(adapter, "run") and "cls_acc" in adapter.run.__globals__:
+            adapter.run.__globals__["cls_acc"] = _original_cls_acc
 
     # ------------------------------------------------------------------ save
     os.makedirs(args.output, exist_ok=True)
