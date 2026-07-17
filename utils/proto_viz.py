@@ -83,12 +83,12 @@ _PTA_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PTA_ROOT not in sys.path:
     sys.path.insert(0, _PTA_ROOT)
 
-from models.multi_proto_pta_base import (
+from models.patch_level.base import (
     _safe_normalize,
     _extract_patch_embeddings,
     _incremental_kmeans_step,
+    _gaussian_score_for_class,
 )
-from models.multi_proto_pta import _proto_score_for_class
 from utils import get_clip_logits, cls_acc
 
 
@@ -121,6 +121,8 @@ class ClassRecord:
     class_id: int
     class_name: str
     text_score: float
+    image_score: float
+    patch_score: float
     raw_proto_score: float
     delta_proto: float
     alpha: float
@@ -167,6 +169,12 @@ class SampleRecord:
     update_gate_bank_k: int = 0
     update_gate_max_k: int = 0
     foreground_appw_thresh: float = 0.5
+    text_only_logits: Optional[List[float]] = None
+    pta_logits: Optional[List[float]] = None
+    full_logits: Optional[List[float]] = None
+    tau_text: float = 1.0
+    tau_image_proto: float = 100.0
+    tau_patch_proto: float = 10.0
 
 
 @dataclass
@@ -202,7 +210,7 @@ class ProtoVizEngine:
         self.clip_model = clip_model
         self._clip_weights_tensor = clip_weights
 
-        # Keep defaults consistent with models/multi_proto_pta.py.
+        # Keep defaults consistent with models/patch_level/gaussian_patch.py.
         self.max_K        = int(cfg.get("max_K", 100))
         self.match_thresh = float(cfg.get("match_threshold", 0.60))
         self.conf_thresh  = float(cfg.get("conf_threshold", 0.5))
@@ -215,6 +223,15 @@ class ProtoVizEngine:
         self.tau_proto    = float(cfg.get("tau_proto", cfg.get("T", 20.0)))
         self.quality_eps  = float(cfg.get("quality_eps", 1e-3))
         self.foreground_appw_thresh = float(cfg.get("foreground_appw_threshold", 0.5))
+        self.variance_min = float(cfg.get("variance_min", 0.001))
+        self.default_new_var = self.variance_min * 10.0
+        self.gaussian_ema = float(cfg.get("gaussian_ema", 0.1))
+        self.variance_max = float(cfg.get("variance_max", 1.0))
+        self.scoring = str(cfg.get("scoring", "gaussian"))
+        fusion_cfg = cfg.get("fusion", {})
+        self.tau_text = float(fusion_cfg.get("tau_text", 1.0))
+        self.tau_image_proto = float(fusion_cfg.get("tau_image_proto", 100.0))
+        self.tau_patch_proto = float(fusion_cfg.get("tau_patch_proto", 0.0))
 
         text_proto = _safe_normalize(clip_weights.t().float())
         self.text_proto = text_proto
@@ -225,6 +242,7 @@ class ProtoVizEngine:
         self.states: List[Dict] = [
             {
                 "centers":       torch.empty(0, D, device=self.device),
+                "variance":      torch.empty(0, D, device=self.device),
                 "appearance":    torch.empty(0,    device=self.device),
                 "n_images":      0,
                 "rep_patch_data": [],
@@ -282,14 +300,16 @@ class ProtoVizEngine:
                 continue
 
             centers_norm = _safe_normalize(centers, dim=-1)
-            raw_bank, max_sims, app_weights, assigned_patch_idx, weighted, _ = _proto_score_for_class(
+            variance = self.states[c].get("variance", torch.ones_like(centers_norm) * self.default_new_var)
+            raw_bank = _gaussian_score_for_class(
                 patches_norm,
                 centers_norm,
+                variance,
                 appearance,
                 update_samples=int(self.states[c].get("n_images", 0)),
                 top_m=self.top_m,
                 patch_group_threshold=self.patch_group_threshold,
-                return_details=True,
+                variance_min=self.variance_min,
             )
 
             raw_proto_scores[c] = raw_bank
@@ -297,10 +317,18 @@ class ProtoVizEngine:
                 self.alpha_max,
                 self._alpha_from_evidence(self.states[c]["n_images"], self.n_half),
             )
-            per_proto_max_sims.append(max_sims.cpu())
-            per_proto_app_weights.append(app_weights.cpu())
-            per_proto_assigned_patch_idx.append(assigned_patch_idx.cpu())
-            per_proto_weighted_scores.append(weighted.cpu())
+            # Per-prototype details for visualization (cosine-based approximation)
+            with torch.no_grad():
+                sim_matrix = patches_norm @ centers_norm.t()  # [P, K]
+                max_sims_local = sim_matrix.max(dim=0).values  # [K]
+                assigned_patch_local = sim_matrix.argmax(dim=0)  # [K]
+                update_samples_val = max(float(self.states[c].get("n_images", 0)), 1e-6)
+                app_w = appearance / update_samples_val  # [K]
+                weighted_local = max_sims_local * app_w  # [K]
+            per_proto_max_sims.append(max_sims_local.cpu())
+            per_proto_app_weights.append(app_w.cpu())
+            per_proto_assigned_patch_idx.append(assigned_patch_local.cpu())
+            per_proto_weighted_scores.append(weighted_local.cpu())
 
         proto_var = raw_proto_scores.var()
         quality_gate = proto_var / (proto_var + self.quality_eps)
@@ -326,11 +354,22 @@ class ProtoVizEngine:
         text_running_acc = float(np.mean(self._text_accuracies))
 
         class_records = []
+        text_only_logits: List[float] = []
+        pta_logits_arr: List[float] = []
+        full_logits_arr: List[float] = []
         for c in range(self.C):
+            raw_img = float(raw_proto_scores[c].item())
+            img_contrib = float((class_alpha[c] * quality_gate * raw_proto_scores[c]).item())
+            patch_contrib = float(proto_term[c].item())
+            text_only_logits.append(float(text_scores[c]))
+            pta_logits_arr.append(float(text_scores[c]) + self.tau_image_proto * img_contrib)
+            full_logits_arr.append(float(text_scores[c]) + self.tau_image_proto * img_contrib + self.tau_patch_proto * patch_contrib)
             class_records.append(ClassRecord(
                 class_id=c,
                 class_name=self.classnames[c],
                 text_score=text_scores[c],
+                image_score=raw_img,
+                patch_score=float(proto_term[c].item()),
                 raw_proto_score=float(raw_proto_scores[c].item()),
                 delta_proto=float(raw_proto_scores[c].item()),
                 alpha=float(class_alpha[c].item()),
@@ -458,6 +497,12 @@ class ProtoVizEngine:
             update_gate_bank_k=bank_k,
             update_gate_max_k=self.max_K,
             foreground_appw_thresh=self.foreground_appw_thresh,
+            text_only_logits=text_only_logits,
+            pta_logits=pta_logits_arr,
+            full_logits=full_logits_arr,
+            tau_text=self.tau_text,
+            tau_image_proto=self.tau_image_proto,
+            tau_patch_proto=self.tau_patch_proto,
         )
         self._sample_idx += 1
         return record
@@ -472,6 +517,7 @@ class ProtoVizEngine:
         state = self.states[class_idx]
         centers = state["centers"]
         apps = state["appearance"]
+        variances = state.get("variance", torch.empty(0, patches_norm.shape[-1], device=self.device))
         n_images_next = int(state.get("n_images", 0) + 1)
         grow_cap = max(self.max_K + int(patches_norm.shape[0]), self.max_K)
         rep_patch_data = list(state.get("rep_patch_data", [None] * centers.shape[0]))
@@ -489,6 +535,18 @@ class ProtoVizEngine:
             # First center is seeded from global feature; it starts with one appearance.
             n_new = updated_centers.shape[0] - 1
             updated_apps = torch.ones(1 + max(n_new, 0), device=self.device)
+
+            # Seed variance for the global-feature prototype.
+            seed_var = torch.full(
+                (updated_centers.shape[1],), self.default_new_var,
+                device=self.device,
+            )
+            mask = matched & (best_clusters == 0)
+            if mask.any():
+                centers_old_norm = _safe_normalize(init, dim=-1)
+                residuals = patches_norm[mask] - centers_old_norm
+                seed_var = residuals.pow(2).mean(dim=0).clamp(self.variance_min, self.variance_max)
+            updated_variances = [seed_var]
 
             # Seed metadata for the global-feature prototype.
             if len(rep_patch_data) == 0:
@@ -509,6 +567,19 @@ class ProtoVizEngine:
             if n_new > 0:
                 updated_apps = torch.cat([updated_apps, torch.ones(n_new, device=self.device)], dim=0)
 
+            # Update variance for existing prototypes via EMA.
+            updated_variances = []
+            centers_old_norm = _safe_normalize(centers, dim=-1)
+            for k in range(old_K):
+                mask = matched & (best_clusters == k)
+                if mask.any():
+                    residuals = patches_norm[mask] - centers_old_norm[k]
+                    batch_var = residuals.pow(2).mean(dim=0).clamp(self.variance_min, self.variance_max)
+                    updated_var = (1 - self.gaussian_ema) * variances[k] + self.gaussian_ema * batch_var
+                    updated_variances.append(updated_var.clamp(self.variance_min, self.variance_max))
+                else:
+                    updated_variances.append(variances[k])
+
         # Update representative patch for existing prototypes if a better match is seen.
         sims_updated = patches_norm @ _safe_normalize(updated_centers, dim=-1).t()
         for k in range(old_K):
@@ -524,25 +595,40 @@ class ProtoVizEngine:
                 rep_patch_idx[k] = best_local
                 rep_patch_sim[k] = best_local_sim
 
-        # Initialize representative patches for newly created prototypes.
+        # Initialize representative patches and variance for newly created prototypes.
         for i, member_idx in enumerate(new_groups):
             new_k = old_K + i
             if new_k >= updated_centers.shape[0] or member_idx.numel() == 0:
                 rep_patch_data.append(None)
                 rep_patch_idx.append(-1)
                 rep_patch_sim.append(-1.0)
+                updated_variances.append(
+                    torch.full((updated_centers.shape[1],), self.default_new_var, device=self.device)
+                )
                 continue
             sims_new = sims_updated[member_idx, new_k]
             best_m = int(member_idx[int(sims_new.argmax().item())].item())
             rep_patch_data.append(self._extract_patch_crop_base64(image_tensor, best_m, patches_norm.shape[0]))
             rep_patch_idx.append(best_m)
             rep_patch_sim.append(float(sims_updated[best_m, new_k].item()))
+            group_patches = patches_norm[member_idx]
+            group_center = _safe_normalize(updated_centers[new_k])
+            if group_patches.shape[0] > 1:
+                residuals = group_patches - group_center
+                group_var = residuals.pow(2).mean(dim=0).clamp(self.variance_min, self.variance_max)
+            else:
+                group_var = torch.full((updated_centers.shape[1],), self.default_new_var, device=self.device)
+            updated_variances.append(group_var)
 
         # Ensure metadata lists match center count in edge cases.
         while len(rep_patch_data) < updated_centers.shape[0]:
             rep_patch_data.append(None)
             rep_patch_idx.append(-1)
             rep_patch_sim.append(-1.0)
+        while len(updated_variances) < updated_centers.shape[0]:
+            updated_variances.append(
+                torch.full((updated_centers.shape[1],), self.default_new_var, device=self.device)
+            )
 
         if updated_centers.shape[0] > self.max_K:
             app_w = updated_apps / float(max(n_images_next, 1))
@@ -552,12 +638,14 @@ class ProtoVizEngine:
 
             updated_centers = updated_centers[keep]
             updated_apps = updated_apps[keep]
+            updated_variances = [updated_variances[k] for k in keep_list]
             rep_patch_data = [rep_patch_data[k] for k in keep_list]
             rep_patch_idx = [rep_patch_idx[k] for k in keep_list]
             rep_patch_sim = [rep_patch_sim[k] for k in keep_list]
 
         return {
             "centers": updated_centers,
+            "variance": torch.stack(updated_variances, dim=0) if updated_variances else torch.empty(0, updated_centers.shape[-1], device=self.device),
             "appearance": updated_apps,
             "n_images": n_images_next,
             "rep_patch_data": rep_patch_data[:updated_centers.shape[0]],

@@ -8,25 +8,25 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --exclude=node1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-13
+#SBATCH --array=0-9%3
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_vs_patch_mod_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_vs_patch_mod_%x-%A_%a.err
 
 # ============================================================================
 # Slurm array job: PTA vs PatchModulatedPTA CD benchmark (ViT-B/16)
 #
-# 14 tasks = 2 experiments × 7 CD core datasets
+# 10 tasks = 2 experiments × 5 CD datasets
 #
-#   exp_idx = SLURM_ARRAY_TASK_ID / 7
-#   ds_idx  = SLURM_ARRAY_TASK_ID % 7
+#   exp_idx = SLURM_ARRAY_TASK_ID / 5
+#   ds_idx  = SLURM_ARRAY_TASK_ID % 5
 #
 #   ID  Experiment           Method                 Config
 #   --  --------------------- ---------------------- ---------------
 #    0  PTA (baseline)       pta                    configs
-#    1  PatchModulatedPTA    patch_modulated_pta    configs
+#    1  PatchModulatedPTA    patch_modulated_pta    configs_patch_modulated_pta
 #
-# CD core datasets (same 7 for every experiment):
-#   caltech101 dtd eurosat fgvc oxford_flowers oxford_pets ucf101
+# CD datasets (same 5 for every experiment):
+#   dtd eurosat fgvc oxford_flowers oxford_pets
 # ============================================================================
 
 set -euo pipefail
@@ -48,28 +48,28 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 # ---------------------------------------------------------------------------
 # Experiment definitions
 # ---------------------------------------------------------------------------
-DATASETS=(caltech101 dtd eurosat fgvc oxford_flowers oxford_pets ucf101)
+DATASETS=(dtd eurosat fgvc oxford_flowers oxford_pets)
 
 METHODS=(
-    pta
     patch_modulated_pta
+    pta
 )
 
 CONFIG_DIRS=(
-    configs
+    configs_patch_modulated_pta
     configs
 )
 
 EXP_LABELS=(
-    "PTA-baseline"
     "PatchModulatedPTA"
+    "PTA-baseline"
 )
 
 # ---------------------------------------------------------------------------
 # Map task ID → experiment + dataset
 # ---------------------------------------------------------------------------
-exp_idx=$((SLURM_ARRAY_TASK_ID / 7))
-ds_idx=$((SLURM_ARRAY_TASK_ID % 7))
+exp_idx=$((SLURM_ARRAY_TASK_ID / 5))
+ds_idx=$((SLURM_ARRAY_TASK_ID % 5))
 
 METHOD=${METHODS[$exp_idx]}
 CONFIG=${CONFIG_DIRS[$exp_idx]}
@@ -87,6 +87,8 @@ echo "  Config     : $CONFIG"
 echo "  Dataset    : $DATASET  (ds_idx=$ds_idx)"
 echo "  Node       : $(hostname)"
 echo "========================================================================"
+
+export RESULT_LABEL="${EXP_LABEL}-2"
 
 python -u runner.py \
     --method "$METHOD" \

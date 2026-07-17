@@ -2,13 +2,11 @@ image_level:
   type: PTAImageLevel
   alpha: 0.01
   T: 50.0
-
 patch_level:
   type: GaussianPatchLevel
   max_K: 100
-  match_threshold: 0.6
   conf_threshold: 0.5
-  conf_margin_threshold: 0.05
+  conf_margin_threshold: 0.00
   n_half: 15.0
   soft_nn_top_m: 4
   proto_alpha_max: 1.0
@@ -18,10 +16,10 @@ patch_level:
   gaussian_ema: 0.1
   variance_min: 0.001
   variance_max: 1.0
-
+  match_threshold: 0.6
+  aug_copies: 15
 fusion:
   type: ProtoAlphaFusion
   tau_text: 1.0
-  tau_image_proto: 100.0
+  tau_image_proto: 80.0
   tau_patch_proto: 20.0
-  quality_modulation: 1.0

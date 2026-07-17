@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MultiProtoPTA Visualizer</title>
+    <title>PTA Prototype Visualizer</title>
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
   </head>
   <body>
     <div class="header-sticky">
       <div class="topbar">
-        <h1>🔬 MultiProtoPTA Prototype Visualizer</h1>
+        <h1>🔬 PTA Prototype Visualizer</h1>
         <div class="status-info" id="statusInfo"></div>
       </div>
       <div class="nav-buttons">
@@ -27,10 +27,10 @@
     <div id="helpModal" class="modal hidden">
       <div class="modal-content">
         <span class="close">&times;</span>
-        <h2>How to Use MultiProtoPTA Visualizer</h2>
+        <h2>How to Use PTA Visualizer</h2>
         
         <h3>📊 What is this?</h3>
-        <p>This tool helps you inspect and understand how <strong>MultiProtoPTA</strong> adapts CLIP vision-language models at test time. It shows:</p>
+        <p>This tool helps you inspect and understand how <strong>PTA</strong> adapts CLIP vision-language models at test time. It shows:</p>
         <ul>
           <li>CLIP's zero-shot text embedding contribution</li>
           <li>Prototype bank updates (learned patch-level visual features)</li>
@@ -108,7 +108,7 @@
               <li><strong>Samples 100–200:</strong> K grows to 5–15 as more matching patches are collected</li>
               <li><strong>Samples 200+:</strong> K approaches max_K (default 30 per class)</li>
             </ul>
-            <strong>→ This is normal and expected!</strong> MultiProtoPTA adapts incrementally over time.
+            <strong>→ This is normal and expected!</strong> PTA adapts incrementally over time.
           </dd>
           
           <dt><strong>Active Prototypes (shown in class details)</strong></dt>
@@ -136,11 +136,40 @@
         <p>Click <strong>Save</strong> to export the current sample as JSON to <code>outputs/viz_exports/</code>.</p>
         <p>Filename format: <code>YYYYmmdd_HHMMSS_dataset_sampleXXXXX.json</code></p>
 
+        <h3>⚙️ Config Editor</h3>
+        <dl>
+          <dt><strong>What is it?</strong></dt>
+          <dd>
+            A built-in YAML config editor that lets you modify hyperparameters (alpha, T, temperature, etc.)
+            without leaving the visualizer. Changes are applied to a temporary copy — your original config files are never modified.
+          </dd>
+
+          <dt><strong>How to use it:</strong></dt>
+          <dd>
+            <ol>
+              <li>Click <strong>⚙️ Config Editor</strong> to expand the editor panel</li>
+              <li>Select a <strong>config directory</strong> and <strong>dataset</strong> from the Load section</li>
+              <li>Config parameters will load as editable form fields</li>
+              <li>Modify any value — changed fields are highlighted in blue</li>
+              <li>The YAML preview updates in real-time as you type</li>
+              <li>Click <strong>⚡ Apply &amp; Rerun</strong> to save a temporary config and re-run the dataset with your changes</li>
+              <li>Click <strong>🔄 Reset to Defaults</strong> to discard changes and reload the original values</li>
+            </ol>
+          </dd>
+
+          <dt><strong>Safety</strong></dt>
+          <dd>
+            All edits are saved to temporary files in <code>outputs/viz/tmp_configs/</code>.
+            Original YAML files in <code>configs*/</code> directories are never touched.
+          </dd>
+        </dl>
+
         <h3>⚠️ Notes</h3>
         <ul>
           <li>You must <strong>Load</strong> data before using Next/Restart buttons</li>
           <li>Live mode takes time; progress will update as samples are processed</li>
           <li>Patch images show the closest matches to prototypes by cosine similarity</li>
+          <li>The Config Editor creates temporary files — use <strong>🔄 Reset to Defaults</strong> to discard unused temp configs</li>
         </ul>
       </div>
     </div>
@@ -159,7 +188,7 @@
             <select id="datasetSelect"></select>
           </label>
           <label id="configLabel">Config path
-            <input id="configInput" value="configs_multi_proto" />
+            <input id="configInput" value="configs_patch_modulated_pta" />
           </label>
           <label id="backboneLabel">Backbone
             <input id="backboneInput" value="ViT-B/16" />
@@ -175,7 +204,34 @@
           </label>
           <button id="loadBtn" class="primary">Load</button>
         </div>
+        <div id="loadingBar" class="loading-bar-container hidden">
+          <div id="loadingBarFill" class="loading-bar indeterminate"></div>
+        </div>
+        <div id="loadingStatus" class="loading-status hidden"></div>
         <div id="loadInfo" class="muted"></div>
+      </section>
+
+      <section id="configEditorSection" class="panel config-editor-section">
+        <h2 class="collapsible-header" id="configEditorToggle">
+          ⚙️ Config Editor <span class="toggle-icon">▶</span>
+        </h2>
+        <div id="configEditorContent" class="collapsible-content">
+          <div class="config-editor-grid">
+            <div class="config-params" id="configParams">
+              <p class="muted">Load a dataset first to see config parameters.</p>
+            </div>
+            <div class="config-preview">
+              <label>YAML Preview
+                <pre id="yamlPreview" class="yaml-preview-box"></pre>
+              </label>
+            </div>
+          </div>
+          <div class="config-editor-actions">
+            <button id="applyConfigBtn" class="primary" disabled>⚡ Apply &amp; Rerun</button>
+            <button id="resetConfigBtn" class="nav-btn" disabled>🔄 Reset to Defaults</button>
+            <span id="configStatus" class="muted"></span>
+          </div>
+        </div>
       </section>
 
       <section id="contentSection" class="hidden">
@@ -205,7 +261,7 @@
 
         <!-- Score Visualization -->
         <section class="panel scores-section">
-          <h2>Score Breakdown (Top 10 Classes)</h2>
+          <h2>Score Breakdown (Top 5 Classes)</h2>
           <div id="scoreVisualization" class="score-bars"></div>
         </section>
 

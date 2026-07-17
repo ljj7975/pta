@@ -62,6 +62,8 @@ def sample_record_to_dict(rec: SampleRecord, selected_class_name: Optional[str] 
             "bank_K": cr.bank_size,
             "max_k": int(getattr(rec, "update_gate_max_k", 0)),
             "text_score": cr.text_score,
+            "image_score": cr.image_score,
+            "patch_score": getattr(cr, "patch_score", 0.0),
             "raw_proto": cr.raw_proto_score,
             "delta_proto": getattr(cr, "delta_proto", cr.raw_proto_score),
             "alpha": getattr(cr, "alpha", cr.class_penalty),
@@ -72,6 +74,7 @@ def sample_record_to_dict(rec: SampleRecord, selected_class_name: Optional[str] 
             "tau_eff": cr.tau_eff,
             "class_penalty": cr.class_penalty,
             "final_logit": cr.final_logit,
+            "final_logit_full": getattr(cr, "final_logit_full", cr.final_logit),
             "prob": cr.softmax_prob,
         })
 
@@ -161,6 +164,13 @@ def sample_record_to_dict(rec: SampleRecord, selected_class_name: Optional[str] 
         "clip_conf": rec.clip_conf,
         "running_acc": rec.running_acc,
         "text_running_acc": float(getattr(rec, "text_running_acc", 0.0)),
+        "fusion_type": str(getattr(rec, "fusion_type", "WeightedFusion")),
+        "text_only_logits": getattr(rec, "text_only_logits", None),
+        "pta_logits": getattr(rec, "pta_logits", None),
+        "full_logits": getattr(rec, "full_logits", None),
+        "tau_text": float(getattr(rec, "tau_text", 1.0)),
+        "tau_image_proto": float(getattr(rec, "tau_image_proto", 100.0)),
+        "tau_patch_proto": float(getattr(rec, "tau_patch_proto", 10.0)),
         "update_gate": {
             "passed": bool(getattr(rec, "update_gate_passed", False)),
             "class_id": getattr(rec, "update_gate_class_id", None),
@@ -296,6 +306,19 @@ class ProtoVizSession:
         self.current_idx = 0
         return save_path
 
+    def _per_class_accuracy(self) -> Dict[str, Dict[str, int]]:
+        """Compute per-class correct/total counts from records[0..current_idx]."""
+        counts: Dict[str, Dict[str, int]] = {}
+        for i in range(self.current_idx + 1):
+            rec = self.records[i]
+            name = rec.target_name
+            if name not in counts:
+                counts[name] = {"correct": 0, "total": 0}
+            counts[name]["total"] += 1
+            if rec.correct:
+                counts[name]["correct"] += 1
+        return counts
+
     def current_payload(self, selected_class_name: Optional[str] = None) -> Dict[str, Any]:
         """Return serialized payload for the current sample pointer."""
         if not self.loaded:
@@ -305,6 +328,7 @@ class ProtoVizSession:
         payload["num_samples"] = len(self.records)
         payload["dataset"] = self.dataset_name
         payload["classnames"] = self.classnames
+        payload["per_class_accuracy"] = self._per_class_accuracy()
         return payload
 
     def next(self) -> int:

@@ -80,8 +80,46 @@ def get_arguments():
         default=1,
         help="Random seed (default: 1).",
     )
+    parser.add_argument(
+        "--override",
+        dest="overrides",
+        nargs="*",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override one or more config values after loading the YAML. "
+            "Supports dotted paths for nested keys. "
+            "Values are auto-cast to float/int when possible. "
+            "Example: --override conf_threshold=0.3 conf_margin_threshold=0.1"
+        ),
+    )
 
     return parser.parse_args()
+
+
+def apply_overrides(cfg: dict, overrides: list) -> dict:
+    """Apply key=value override strings to a config dict.
+
+    Supports dotted paths (e.g. ``patch_level.conf_threshold=0.3``).
+    Values are auto-cast to float or int when possible; otherwise kept as str.
+    """
+    for item in overrides:
+        key, _, raw = item.partition("=")
+        # Auto-cast value
+        try:
+            value = int(raw)
+        except ValueError:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = raw
+        # Walk dotted path
+        keys = key.split(".")
+        d = cfg
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        d[keys[-1]] = value
+    return cfg
 
 
 def load_adapter_module(method: str):
@@ -134,6 +172,8 @@ def main():
         print(f"{'='*60}")
 
         cfg = get_config_file(args.config, dataset_name)
+        if args.overrides:
+            cfg = apply_overrides(cfg, args.overrides)
         print("Config:", cfg)
 
         # Build a fresh adapter instance per dataset so running state

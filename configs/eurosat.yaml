@@ -11,7 +11,7 @@ patch_level:
   conf_margin_threshold: 0.05
   n_half: 15.0
   soft_nn_top_m: 4
-  proto_alpha_max: 0.2
+  proto_alpha_max: 1.0
   quality_eps: 0.001
   exclude_pos: false
   patch_group_threshold: 0.9
@@ -20,7 +20,7 @@ patch_level:
   variance_max: 1.0
 
 fusion:
-  type: QualityGatedFusion
+  type: ProtoAlphaFusion
   tau_text: 1.0
   tau_image_proto: 100.0
   tau_patch_proto: 20.0

@@ -212,6 +212,7 @@ def _gaussian_score_for_class(
     top_m: int,
     patch_group_threshold: float = 0.9,
     variance_min: float = 0.001,
+    aggregation: str = "top_m_mean",
 ) -> torch.Tensor:
     """
     Score one class using Gaussian prototype similarity.
@@ -287,4 +288,19 @@ def _gaussian_score_for_class(
     k = min(top_m, weighted.numel())
     if k <= 0:
         return torch.tensor(0.0, device=gaussian_scores.device)
-    return weighted.topk(k).values.mean()
+
+    # ── Aggregation strategy ────────────────────────────────────────────────
+    if aggregation == "top_m_mean":
+        return weighted.topk(k).values.mean()
+    elif aggregation == "max":
+        return weighted.max()
+    elif aggregation == "sum":
+        return weighted.sum()
+    elif aggregation == "mean":
+        return weighted.mean()
+    elif aggregation == "top_m_mean_plus_mean":
+        top_m_val = weighted.topk(k).values.mean()
+        all_mean = weighted.mean()
+        return (top_m_val + all_mean) / 2.0
+    else:
+        return weighted.topk(k).values.mean()

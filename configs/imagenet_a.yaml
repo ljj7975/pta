@@ -4,7 +4,7 @@ image_level:
   T: 20.0
 
 fusion:
-  type: WeightedFusion
+  type: ProtoAlphaFusion
   tau_text: 1.0
   tau_image_proto: 100.0
   tau_patch_proto: 0.0

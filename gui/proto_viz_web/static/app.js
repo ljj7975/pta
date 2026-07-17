@@ -2,6 +2,11 @@ const state = {
   selectedClassName: null,
   isLoaded: false,
   currentMode: "live",
+  // Config editor state
+  originalConfig: null,     // Original YAML config (for reset)
+  currentConfigDir: null,   // Currently selected config dir
+  currentDataset: null,     // Currently selected dataset
+  tempConfigPath: null,     // Path to current temp config file
 };
 
 function updateNavButtonsState() {
@@ -57,11 +62,15 @@ function toggleModeFields() {
 }
 
 function updateStatusInfo(s) {
+  const pca = s.per_class_accuracy || {};
+  const targetPca = pca[s.target_name];
+  const targetAcc = targetPca ? `${targetPca.correct}/${targetPca.total}` : "—";
   const html = `
     <span>Dataset: <strong>${s.dataset || "—"}</strong></span> |
     <span>Sample: <strong>${s.sample_idx + 1}/${s.num_samples}</strong></span> |
     <span>Acc: <strong>${s.running_acc.toFixed(1)}%</strong></span> |
-    <span>CLIP Acc: <strong>${(s.text_running_acc ?? 0).toFixed(1)}%</strong></span>
+    <span>CLIP Acc: <strong>${(s.text_running_acc ?? 0).toFixed(1)}%</strong></span> |
+    <span>${s.target_name}: <strong>${targetAcc}</strong></span>
   `;
   document.getElementById("statusInfo").innerHTML = html;
 }
@@ -124,30 +133,35 @@ function renderPredictionPanel(s) {
 }
 
 function renderScoreVisualization(s) {
-  const sorted = [...s.classes].sort((a, b) => b.final_logit - a.final_logit);
-  const top5 = sorted.slice(0, 5);
+  // s.classes is sorted by final_logit descending — build class_id-indexed
+  // arrays so that arr[class_id] gives the correct score for that class,
+  // regardless of sort order.
+  function _scoreArray(scoreFn) {
+    const C = s.classes.length;
+    return Array.from({length: C}, (_, cid) => {
+      const cls = s.classes.find(c => c.class_id === cid);
+      return cls ? scoreFn(cls) : 0;
+    });
+  }
+  const textOnlyArr = s.text_only_logits || _scoreArray(c => c.text_score);
+  const ptaArr = s.pta_logits || _scoreArray(c => c.final_logit);
+  const fullArr = s.full_logits || _scoreArray(c => c.final_logit_full ?? c.final_logit);
 
-  const minLogit = Math.min(...top5.map(c => c.final_logit));
-  const maxLogit = Math.max(...top5.map(c => c.final_logit));
-  const range = maxLogit - minLogit || 1;
+  const textOnlyPred = s.classes.reduce((best, c) => (textOnlyArr[c.class_id] > textOnlyArr[best.class_id] ? c : best), s.classes[0]);
+  const ptaPred = s.classes.reduce((best, c) => (ptaArr[c.class_id] > ptaArr[best.class_id] ? c : best), s.classes[0]);
+  const fullPred = s.classes.reduce((best, c) => (fullArr[c.class_id] > fullArr[best.class_id] ? c : best), s.classes[0]);
 
-  // Text-only prediction: argmax of text_score across all classes.
-  const textOnly = [...s.classes].reduce((best, c) => c.text_score > best.text_score ? c : best, s.classes[0]);
-  const finalPred = sorted[0];
-  const textFixed = (textOnly.class_id !== finalPred.class_id);
-  const textPredCorrect = textOnly.class_id === s.target;
-  const finalPredCorrect = finalPred.class_id === s.target;
+  const textPredCorrect = textOnlyPred.class_id === s.target;
+  const ptaPredCorrect = ptaPred.class_id === s.target;
+  const fullPredCorrect = fullPred.class_id === s.target;
 
   let html = `
-    <div class="proto-impact-bar ${textFixed ? (finalPredCorrect ? "impact-fixed" : "impact-changed") : "impact-same"}">
-      <strong>Text-only:</strong> ${textOnly.class_name} ${textPredCorrect ? "✓" : "✗"}
+    <div class="proto-impact-bar ${fullPred.class_id !== textOnlyPred.class_id ? (fullPredCorrect ? "impact-fixed" : "impact-changed") : "impact-same"}">
+      <strong>Text-only:</strong> ${textOnlyPred.class_name} ${textPredCorrect ? "✓" : "✗"}
       &nbsp;→&nbsp;
-      <strong>Final:</strong> ${finalPred.class_name} ${finalPredCorrect ? "✓" : "✗"}
-      &nbsp;|&nbsp;
-      ${textFixed
-        ? (finalPredCorrect ? "<span style='color:#10b981'>Proto branch fixed the prediction</span>"
-                            : "<span style='color:#f59e0b'>Proto branch changed prediction (still wrong)</span>")
-        : "<span style='color:#94a3b8'>Proto branch did not change prediction</span>"}
+      <strong>PTA:</strong> ${ptaPred.class_name} ${ptaPredCorrect ? "✓" : "✗"}
+      &nbsp;→&nbsp;
+      <strong>Full:</strong> ${fullPred.class_name} ${fullPredCorrect ? "✓" : "✗"}
     </div>
   `;
 
@@ -177,28 +191,52 @@ function renderScoreVisualization(s) {
     `;
   }
 
-  for (const c of top5) {
-    const pct = ((c.final_logit - minLogit) / range) * 100;
-    const isGT = c.class_id === s.target;
-    const isPred = c.class_id === s.predicted;
-    const isTextPred = c.class_id === textOnly.class_id;
-    let fillClass = "";
-    if (isGT) fillClass = "gt-class";
-    if (isPred && !s.correct) fillClass = "pred-class";
-    const textTag = (isTextPred && textFixed) ? `<span class="text-pred-tag">text-only</span>` : "";
+  function scoreSection(title, logitArr, predClassId) {
+    // Each section independently picks its own top-5 sorted by its own scores
+    const indexed = s.classes.map(c => ({ ...c, val: logitArr[c.class_id] }));
+    const sectionTop5 = indexed.sort((a, b) => b.val - a.val).slice(0, 5);
 
-    html += `
-      <div class="score-bar">
-        <div class="score-label">${c.class_name}${textTag}</div>
-        <div class="score-bar-container">
-          <div class="score-bar-fill ${fillClass}" style="width: ${pct}%">
-            ${c.final_logit.toFixed(2)}
+    const sectionScores = sectionTop5.map(c => c.val);
+    const sMin = Math.min(...sectionScores);
+    const sMax = Math.max(...sectionScores);
+    const sRange = sMax - sMin || 1;
+
+    let bars = "";
+    for (const c of sectionTop5) {
+      const val = c.val;
+      const pct = ((val - sMin) / sRange) * 100;
+      const isGT = c.class_id === s.target;
+      const isPred = c.class_id === predClassId;
+      let fillClass = "";
+      if (isGT) fillClass = "gt-class";
+      if (isPred && c.class_id !== s.target) fillClass = "pred-class";
+      const tag = (c.class_id === predClassId && c.class_id !== fullPred.class_id)
+        ? `<span class="text-pred-tag">predicted</span>` : "";
+      bars += `
+        <div class="score-bar">
+          <div class="score-label">${c.class_name}${tag}</div>
+          <div class="score-bar-container">
+            <div class="score-bar-fill ${fillClass}" style="width: ${pct}%">${val.toFixed(2)}</div>
           </div>
         </div>
-        <div class="score-value">${(c.prob * 100).toFixed(1)}%</div>
+      `;
+    }
+    return `
+      <div class="score-section">
+        <div class="score-section-title">${title}</div>
+        ${bars}
       </div>
     `;
   }
+
+  const tauText = s.tau_text ?? 1;
+  const tauImg = s.tau_image_proto ?? 100;
+  const tauPch = s.tau_patch_proto ?? 10;
+
+  html += scoreSection(`Text Only (τ_text=${tauText} × CLIP)`, textOnlyArr, textOnlyPred.class_id);
+  html += scoreSection(`PTA (text + image, τ_img=${tauImg})`, ptaArr, ptaPred.class_id);
+  html += scoreSection(`Full (+ patch, τ_pch=${tauPch})`, fullArr, fullPred.class_id);
+
   document.getElementById("scoreVisualization").innerHTML = html;
 }
 
@@ -304,12 +342,15 @@ function drawPatchThumbs(imageData) {
 
 function renderAccordion(s) {
   const tooltips = {
-    "Text Score": "CLIP text embedding contribution (~0–100)",
-    "Raw Proto": "Class-level prototype evidence before alpha/quality/tau scaling",
-    "Alpha": "Per-class evidence gate from update history",
-    "Proto Term": "Actual prototype contribution added to text score after weighting",
-    "Final Logit": "Final Logit = Text Score + Proto Term",
-    "Tau Eff": "Sample-level proto scaling factor (adaptive tau if enabled)",
+    "Text Score": "Raw CLIP text-image cosine similarity (×100)",
+    "Tau Image": "Weight for image-level prototype (global parameter)",
+    "Tau Patch": "Weight for patch-level prototype (global parameter)",
+    "Image Score": "tau_image × raw_image_proto_logit",
+    "Patch Score": "tau_patch × alpha × quality_gate × raw_proto",
+    "Alpha": "Per-class evidence gate from update history (0→alpha_max)",
+    "Quality Gate": "Variance-based gate: var(proto_scores) / (var + eps)",
+    "Final Logit": "tau_text × text + tau_image × image_proto (production PTA)",
+    "Final (Full)": "Final logit + Patch Score (includes patch contribution)",
     "Softmax Prob": "Probability from softmax(final_logits), 0–100%"
   };
 
@@ -407,12 +448,17 @@ function renderAccordion(s) {
         </div>`;
     }
 
+    const pca = s.per_class_accuracy || {};
+    const classPca = pca[c.class_name];
+    const classAccStr = classPca ? `${classPca.correct}/${classPca.total}` : "";
+
     html += `
       <div class="accordion-item ${itemClass}">
         <div class="accordion-header" data-class-id="${c.class_id}">
           <span>
             <strong>${c.class_name}</strong> 
             <span style="color: #94a3b8; font-size: 0.9rem;">(K=${c.bank_K}/${maxK}, logit=${c.final_logit.toFixed(3)})</span>
+            ${classAccStr ? `<span style="color: #0ea5e9; font-size: 0.85rem; margin-left: 8px;">acc: ${classAccStr}</span>` : ""}
           </span>
           <span class="accordion-icon">▼</span>
         </div>
@@ -422,33 +468,41 @@ function renderAccordion(s) {
               <span class="detail-label">Text Score</span>
               <span class="detail-value">${c.text_score.toFixed(4)}</span>
             </div>
-            <div class="detail-row" title="${tooltips['Raw Proto']}">
-              <span class="detail-label">Raw Proto</span>
-              <span class="detail-value">${c.raw_proto.toFixed(4)}</span>
+            <div class="detail-row" title="${tooltips['Tau Image']}">
+              <span class="detail-label">Tau Image</span>
+              <span class="detail-value">${(s.tau_image_proto ?? 100).toFixed(1)}</span>
+            </div>
+            <div class="detail-row" title="${tooltips['Tau Patch']}">
+              <span class="detail-label">Tau Patch</span>
+              <span class="detail-value">${(s.tau_patch_proto ?? 10).toFixed(1)}</span>
+            </div>
+            <div class="detail-row" title="${tooltips['Image Score']}">
+              <span class="detail-label">Image Score</span>
+              <span class="detail-value">${c.image_score.toFixed(4)}</span>
+            </div>
+            <div class="detail-row" title="${tooltips['Patch Score']}">
+              <span class="detail-label">Patch Score</span>
+              <span class="detail-value">${c.patch_score.toFixed(4)}</span>
             </div>
             <div class="detail-row" title="${tooltips['Alpha']}">
               <span class="detail-label">Alpha</span>
               <span class="detail-value">${(c.alpha ?? c.class_penalty).toFixed(4)}</span>
             </div>
-            <div class="detail-row" title="${tooltips['Proto Term']}">
-              <span class="detail-label">Proto Term</span>
-              <span class="detail-value">${c.proto_term.toFixed(4)}</span>
+            <div class="detail-row" title="${tooltips['Quality Gate']}">
+              <span class="detail-label">Quality Gate</span>
+              <span class="detail-value">${(s.proto_formula?.quality_gate ?? c.quality_gate ?? 0).toFixed(4)}</span>
             </div>
-            <div class="detail-row" title="${tooltips['Tau Eff']}">
-              <span class="detail-label">Tau Eff</span>
-              <span class="detail-value">${c.tau_eff.toFixed(4)}</span>
-            </div>
-            <div class="detail-row" title="${tooltips['Final Logit']}">
+            <div class="detail-row" title="${tooltips['Final Logit']}" style="border-left-color: #0ea5e9;">
               <span class="detail-label">Final Logit</span>
               <span class="detail-value">${c.final_logit.toFixed(4)}</span>
             </div>
-            <div class="detail-row" title="${tooltips['Proto Term']}" style="grid-column: 1 / -1; border-left-color: #f59e0b;">
-              <span class="detail-label">Proto Term Formula (tau_proto * alpha * quality_gate * raw_proto)</span>
-              <span class="detail-value">${(s.proto_formula?.tau_proto ?? c.tau_proto ?? 0).toFixed(4)} × ${(c.alpha ?? c.class_penalty).toFixed(4)} × ${(s.proto_formula?.quality_gate ?? c.quality_gate ?? 0).toFixed(4)} × ${(c.delta_proto ?? c.raw_proto).toFixed(4)} = ${c.proto_term.toFixed(4)}</span>
+            <div class="detail-row" title="${tooltips['Final (Full)']}" style="border-left-color: #f59e0b;">
+              <span class="detail-label">Final (Full)</span>
+              <span class="detail-value">${(c.final_logit_full ?? c.final_logit).toFixed(4)}</span>
             </div>
             <div class="detail-row" title="${tooltips['Final Logit']}" style="grid-column: 1 / -1; border-left-color: #f59e0b;">
-              <span class="detail-label">Formula (final_logit = text_score + proto_term)</span>
-              <span class="detail-value">${c.text_score.toFixed(4)} + (${c.proto_term.toFixed(4)}) = ${c.final_logit.toFixed(4)}</span>
+              <span class="detail-label">Decomposition</span>
+              <span class="detail-value">final = text(${c.text_score.toFixed(2)}) + image(${c.image_score.toFixed(2)}) + patch(${c.patch_score.toFixed(2)}) = ${(c.final_logit_full ?? c.final_logit).toFixed(2)}</span>
             </div>
             <div class="detail-row" title="${tooltips['Softmax Prob']}">
               <span class="detail-label">Softmax Prob</span>
@@ -524,6 +578,15 @@ async function refreshStatus() {
   const res = await api("/api/status");
   const dsSelect = document.getElementById("datasetSelect");
   dsSelect.innerHTML = (res.datasets || []).map(d => `<option value="${d}">${d}</option>`).join("");
+  dsSelect.removeEventListener("change", dsSelect._configHandler);
+  dsSelect._configHandler = async () => {
+    const configDir = document.getElementById("configInput").value;
+    const dataset = dsSelect.value;
+    if (configDir && dataset) {
+      await loadConfigParams(configDir, dataset);
+    }
+  };
+  dsSelect.addEventListener("change", dsSelect._configHandler);
   if (res.loaded) {
     renderState(res.state);
   }
@@ -612,12 +675,22 @@ function wire() {
       setError("");
       document.getElementById("loadBtn").disabled = true;
       document.getElementById("loadBtn").textContent = "Loading...";
+      document.getElementById("loadingBar").classList.remove("hidden");
+      document.getElementById("loadingStatus").classList.remove("hidden");
+      const nSamples = Number(document.getElementById("nSamplesInput").value) || 200;
+      const mode = document.getElementById("modeSelect").value;
+      document.getElementById("loadingStatus").textContent =
+        mode === "live"
+          ? `Processing ${nSamples} samples... (may take a few minutes)`
+          : "Loading records...";
       await loadData();
     } catch (err) {
       setError("Error loading data: " + err.message);
     } finally {
       document.getElementById("loadBtn").disabled = false;
       document.getElementById("loadBtn").textContent = "Load";
+      document.getElementById("loadingBar").classList.add("hidden");
+      document.getElementById("loadingStatus").classList.add("hidden");
     }
   });
 
@@ -630,7 +703,9 @@ function wire() {
       setError("");
       await nextSample();
     } catch (err) {
-      setError("Error: " + err.message);
+      state.isLoaded = false;
+      updateNavButtonsState();
+      setError("Session lost (server reloaded). Please load data again.");
     }
   });
 
@@ -643,7 +718,9 @@ function wire() {
       setError("");
       await restart();
     } catch (err) {
-      setError("Error: " + err.message);
+      state.isLoaded = false;
+      updateNavButtonsState();
+      setError("Session lost (server reloaded). Please load data again.");
     }
   });
 
@@ -656,7 +733,9 @@ function wire() {
       setError("");
       await saveCurrent();
     } catch (err) {
-      setError("Error saving: " + err.message);
+      state.isLoaded = false;
+      updateNavButtonsState();
+      setError("Session lost (server reloaded). Please load data again.");
     }
   });
 
@@ -669,7 +748,9 @@ function wire() {
       setError("");
       await goToSample();
     } catch (err) {
-      setError("Error jumping to sample: " + err.message);
+      state.isLoaded = false;
+      updateNavButtonsState();
+      setError("Session lost (server reloaded). Please load data again.");
     }
   });
 
@@ -680,9 +761,215 @@ function wire() {
       setError("");
       await goToSample();
     } catch (err) {
-      setError("Error jumping to sample: " + err.message);
+      state.isLoaded = false;
+      updateNavButtonsState();
+      setError("Session lost (server reloaded). Please load data again.");
     }
   });
+
+  document.getElementById("configEditorToggle").addEventListener("click", toggleConfigEditor);
+  document.getElementById("applyConfigBtn").addEventListener("click", async () => {
+    try {
+      await applyConfigAndRerun();
+    } catch (err) {
+      setError("Error applying config: " + err.message);
+    }
+  });
+  document.getElementById("resetConfigBtn").addEventListener("click", async () => {
+    try {
+      await resetConfig();
+    } catch (err) {
+      setError("Error resetting config: " + err.message);
+    }
+  });
+}
+
+function toggleConfigEditor() {
+  const content = document.getElementById("configEditorContent");
+  const icon = document.querySelector("#configEditorToggle .toggle-icon");
+  content.classList.toggle("open");
+  icon.classList.toggle("open");
+}
+
+async function loadConfigParams(configDir, dataset) {
+  try {
+    setError("");
+    const data = await api("/api/config/load", "POST", { config_dir: configDir, dataset });
+    state.originalConfig = data.config;
+    state.currentConfigDir = configDir;
+    state.currentDataset = dataset;
+    renderConfigParams(data.config);
+    updateYamlPreview(data.config);
+    document.getElementById("applyConfigBtn").disabled = false;
+    document.getElementById("resetConfigBtn").disabled = false;
+  } catch (err) {
+    document.getElementById("configParams").innerHTML =
+      '<p class="muted">Could not load config: ' + err.message + "</p>";
+    document.getElementById("yamlPreview").textContent = "";
+    document.getElementById("applyConfigBtn").disabled = true;
+    document.getElementById("resetConfigBtn").disabled = true;
+  }
+}
+
+function flattenConfig(obj, prefix) {
+  const entries = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const dotKey = prefix ? `${prefix}.${key}` : key;
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      entries.push(...flattenConfig(value, dotKey));
+    } else {
+      entries.push({ key: dotKey, value });
+    }
+  }
+  return entries;
+}
+
+function renderConfigParams(config) {
+  const container = document.getElementById("configParams");
+  container.innerHTML = "";
+  const leaves = flattenConfig(config, "");
+  for (const { key, value } of leaves) {
+    const row = document.createElement("div");
+    row.className = "config-param-row";
+    row.dataset.key = key;
+    row.dataset.original = String(value);
+
+    const label = document.createElement("label");
+    label.textContent = key;
+
+    const input = document.createElement("input");
+    input.value = String(value);
+    if (typeof value === "number") {
+      input.type = "number";
+      input.step = value % 1 === 0 ? "1" : "any";
+    } else {
+      input.type = "text";
+    }
+
+    const typeSpan = document.createElement("span");
+    typeSpan.className = "param-type";
+    typeSpan.textContent = typeof value;
+
+    input.addEventListener("input", () => {
+      const original = row.dataset.original;
+      const current = input.value;
+      const changed = current !== original;
+      row.classList.toggle("changed", changed);
+      const cfg = collectConfigFromForm();
+      updateYamlPreview(cfg);
+    });
+
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(typeSpan);
+    container.appendChild(row);
+  }
+}
+
+function unflattenConfig(flat) {
+  const result = {};
+  for (const [dotKey, value] of Object.entries(flat)) {
+    const parts = dotKey.split(".");
+    let cur = result;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in cur)) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+  return result;
+}
+
+function collectConfigFromForm() {
+  const flat = {};
+  for (const row of document.querySelectorAll(".config-param-row")) {
+    const key = row.dataset.key;
+    const input = row.querySelector("input");
+    let value = input.value;
+    if (input.type === "number") {
+      value = Number(value);
+    } else if (value === "true") {
+      value = true;
+    } else if (value === "false") {
+      value = false;
+    }
+    flat[key] = value;
+  }
+  return unflattenConfig(flat);
+}
+
+function updateYamlPreview(config) {
+  document.getElementById("yamlPreview").textContent = buildYamlString(config);
+}
+
+function buildYamlString(obj, indent) {
+  indent = indent || "";
+  const lines = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      lines.push(`${indent}${key}:`);
+      lines.push(buildYamlString(value, indent + "  "));
+    } else if (typeof value === "string") {
+      lines.push(`${indent}${key}: "${value}"`);
+    } else if (typeof value === "boolean") {
+      lines.push(`${indent}${key}: ${value ? "true" : "false"}`);
+    } else {
+      lines.push(`${indent}${key}: ${value}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function collectFormOverrides() {
+  const overrides = {};
+  for (const row of document.querySelectorAll(".config-param-row")) {
+    if (!row.classList.contains("changed")) continue;
+    const key = row.dataset.key;
+    const input = row.querySelector("input");
+    let value = input.value;
+    if (input.type === "number") {
+      value = Number(value);
+    } else if (value === "true") {
+      value = true;
+    } else if (value === "false") {
+      value = false;
+    }
+    overrides[key] = value;
+  }
+  return overrides;
+}
+
+async function applyConfigAndRerun() {
+  const overrides = collectFormOverrides();
+  if (Object.keys(overrides).length === 0) {
+    document.getElementById("configStatus").textContent = "No changes to apply";
+    return;
+  }
+  try {
+    setError("");
+    document.getElementById("configStatus").textContent = "Saving config...";
+    const data = await api("/api/config/save-temp", "POST", {
+      config_dir: state.currentConfigDir,
+      dataset: state.currentDataset,
+      overrides,
+    });
+    state.tempConfigPath = data.temp_path;
+    document.getElementById("configInput").value = data.temp_path;
+    document.getElementById("configStatus").textContent = "⚡ Config saved, reloading...";
+    await loadData();
+    document.getElementById("configStatus").textContent = "⚡ Applied and reloaded";
+  } catch (err) {
+    setError("Error applying config: " + err.message);
+    document.getElementById("configStatus").textContent = "Error: " + err.message;
+  }
+}
+
+async function resetConfig() {
+  if (state.originalConfig) {
+    renderConfigParams(state.originalConfig);
+    updateYamlPreview(state.originalConfig);
+    document.getElementById("configStatus").textContent = "🔄 Reset to defaults";
+  }
 }
 
 (async function boot() {
@@ -691,6 +978,11 @@ function wire() {
   updateNavButtonsState();
   try {
     await refreshStatus();
+    const configDir = document.getElementById("configInput").value;
+    const dsSelect = document.getElementById("datasetSelect");
+    if (configDir && dsSelect.value) {
+      await loadConfigParams(configDir, dsSelect.value);
+    }
   } catch (err) {
     setError("Failed to initialize: " + err.message);
   }

@@ -3,8 +3,9 @@ Fusion module: Decoupled logit fusion strategies.
 
 Provides:
     - BaseFusion              Abstract base for all fusion strategies.
-    - WeightedFusion          Fixed-weight fusion matching PTA's original formula.
-    - QualityGatedFusion      Extended fusion with quality-gated patch modulation.
+    - WeightedFusion          Fixed-weight fusion (no proto_alpha).
+    - ProtoAlphaFusion        Adds proto_alpha modulation to patch term.
+    - QualityGatedFusion      Adds quality_gate on top of proto_alpha.
 """
 
 from abc import ABC, abstractmethod
@@ -52,7 +53,7 @@ class BaseFusion(ABC):
 
 
 class WeightedFusion(BaseFusion):
-    """Fixed-weight fusion matching PTA's original formula.
+    """Fixed-weight fusion — no proto_alpha, no quality_gate.
 
     Reads three scalar weights from ``cfg["fusion"]``:
 
@@ -81,7 +82,6 @@ class WeightedFusion(BaseFusion):
         patch_proto_logits: Optional[Tensor] = None,
         **kwargs,
     ) -> Tensor:
-        # NOTE: clone() is essential — never mutate clip_logits in-place.
         result = self.tau_text * clip_logits.clone()
         result += self.tau_image_proto * image_proto_logits
         if patch_proto_logits is not None:
@@ -89,16 +89,39 @@ class WeightedFusion(BaseFusion):
         return result
 
 
-class QualityGatedFusion(WeightedFusion):
-    """Extended fusion with quality-gated patch-level modulation.
+class ProtoAlphaFusion(WeightedFusion):
+    """Fixed-weight fusion with proto_alpha modulation on patch term.
 
-    In addition to the three tau weights inherited from
-    :class:`WeightedFusion`, this variant reads:
+    The patch-level term is scaled by ``proto_alpha`` from ``**kwargs``,
+    which grows from 0 toward ``alpha_max`` as prototypes accumulate::
 
-        quality_modulation   — scales the quality-gate effect (default 1.0)
+        result = tau_text * clip_logits.clone()
+        result += tau_image_proto * image_proto_logits
+        if patch_proto_logits is not None:
+            proto_alpha = kwargs.get('proto_alpha', 1.0)
+            result += tau_patch_proto * proto_alpha * patch_proto_logits
+    """
 
-    The forward pass applies ``quality_gate`` and ``proto_alpha`` from
-    ``**kwargs`` to the patch-level term::
+    def forward(
+        self,
+        clip_logits: Tensor,
+        image_proto_logits: Tensor,
+        patch_proto_logits: Optional[Tensor] = None,
+        **kwargs,
+    ) -> Tensor:
+        result = self.tau_text * clip_logits.clone()
+        result += self.tau_image_proto * image_proto_logits
+        if patch_proto_logits is not None:
+            proto_alpha = kwargs.get("proto_alpha", 1.0)
+            result += self.tau_patch_proto * proto_alpha * patch_proto_logits
+        return result
+
+
+class QualityGatedFusion(ProtoAlphaFusion):
+    """Fixed-weight fusion with proto_alpha AND quality_gate on patch term.
+
+    The patch-level term is scaled by both ``proto_alpha`` and
+    ``quality_gate`` from ``**kwargs``::
 
         result = tau_text * clip_logits.clone()
         result += tau_image_proto * image_proto_logits
@@ -107,10 +130,6 @@ class QualityGatedFusion(WeightedFusion):
             proto_alpha  = kwargs.get('proto_alpha', 1.0)
             result += tau_patch_proto * proto_alpha * quality_gate * patch_proto_logits
     """
-
-    def __init__(self, cfg: dict):
-        super().__init__(cfg)
-        self.quality_modulation = float(self._cfg.get("quality_modulation", 1.0))
 
     def forward(
         self,
@@ -124,5 +143,52 @@ class QualityGatedFusion(WeightedFusion):
         if patch_proto_logits is not None:
             quality_gate = kwargs.get("quality_gate", 1.0)
             proto_alpha = kwargs.get("proto_alpha", 1.0)
+            result += self.tau_patch_proto * proto_alpha * quality_gate * patch_proto_logits
+        return result
+
+
+class AdaptiveImageWeightFusion(QualityGatedFusion):
+    """Fusion with per-class adaptive image-level weighting.
+
+    Instead of a single ``tau_image_proto`` scalar applied uniformly to
+    all classes, this variant computes a per-class weight:
+
+        tau_image[c] = tau_image_max - (tau_image_max - tau_image_min) * proto_alpha[c]
+
+    Config keys (read from ``cfg["fusion"]``):
+
+        tau_image_max   — upper bound for per-class image weight (default 100.0)
+        tau_image_min   — lower bound for per-class image weight (default 50.0)
+    """
+
+    def __init__(self, cfg: dict):
+        super().__init__(cfg)
+        self.tau_image_max = float(self._cfg.get("tau_image_max", 100.0))
+        self.tau_image_min = float(self._cfg.get("tau_image_min", 50.0))
+
+    def forward(
+        self,
+        clip_logits: Tensor,
+        image_proto_logits: Tensor,
+        patch_proto_logits: Optional[Tensor] = None,
+        **kwargs,
+    ) -> Tensor:
+        proto_alpha = kwargs.get("proto_alpha", None)
+
+        if proto_alpha is not None and proto_alpha.numel() > 0:
+            tau_image_per_class = (
+                self.tau_image_max
+                - (self.tau_image_max - self.tau_image_min) * proto_alpha
+            )
+            image_weight = tau_image_per_class.unsqueeze(0)
+        else:
+            image_weight = self.tau_image_proto
+
+        result = self.tau_text * clip_logits.clone()
+        result += image_weight * image_proto_logits
+        if patch_proto_logits is not None:
+            quality_gate = kwargs.get("quality_gate", 1.0)
+            if proto_alpha is None:
+                proto_alpha = torch.ones(1, device=clip_logits.device)
             result += self.tau_patch_proto * proto_alpha * quality_gate * patch_proto_logits
         return result
