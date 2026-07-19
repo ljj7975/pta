@@ -190,6 +190,11 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         # Patch-level (Gaussian-style)
         states = self.patch_level.init_state(refine_feature)
 
+        # Initialise patch-level text context for filtering (no-op if patch_filter_mode=none)
+        _filter_mode = self.cfg.get("patch_level", {}).get("patch_filter_mode", "none")
+        if _filter_mode != "none":
+            self.patch_level.set_text_context(clip_weights, clip_model, device)
+
         max_batches = int(os.environ.get("MAX_BATCHES", "0"))
         accuracies = []
 
@@ -204,6 +209,18 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 else:
                     images = images.to(device)
                 target = target.to(device)
+
+                _surgery_precomputed = None
+                if _filter_mode in ("surgery_with_labels", "surgery_no_labels"):
+                    from models.patch_level.base import _extract_all_tokens
+                    from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
+                    _all_tokens = _extract_all_tokens(images, clip_model)  # [1, 1+P, D]
+                    _tf = self.patch_level._text_features.float()  # [C, D]
+                    if _filter_mode == "surgery_with_labels":
+                        _surgery_precomputed = clip_feature_surgery(_all_tokens.float(), _tf)  # [1, 1+P, C]
+                    else:
+                        _ef = self.patch_level._empty_text_feat.float()  # [1, D]
+                        _surgery_precomputed = clip_feature_surgery(_all_tokens.float(), _tf, redundant_feats=_ef)  # [1, 1+P, C]
 
                 # 1) CLIP forward
                 image_features, clip_logits, _, _, _ = get_clip_logits(
@@ -289,6 +306,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                         states[cls] = self.patch_level.update_state(
                             states[cls], images, clip_model, feat_norm,
                             is_high_confidence=True,
+                            filter_scores=_surgery_precomputed[0, 1:, cls] if _surgery_precomputed is not None else None,
+                            target_class_idx=cls,
                         )
                 else:
                     # Default: binary top-1 gate (existing behavior)
@@ -302,6 +321,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                         states[best_cls] = self.patch_level.update_state(
                             states[best_cls], images, clip_model, feat_norm,
                             is_high_confidence=True,
+                            filter_scores=_surgery_precomputed[0, 1:, best_cls] if _surgery_precomputed is not None else None,
+                            target_class_idx=best_cls,
                         )
 
                 if i % 500 == 0:
