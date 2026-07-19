@@ -14,14 +14,13 @@ import os
 import random
 import argparse
 
-# Must be set BEFORE torch import for deterministic CuBLAS
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
-import clip
 
 from utils import get_config_file, build_test_data_loader, clip_classifier, get_imagenet_subset_remap
+from encoder import create_encoder_instance
 
 
 def get_arguments():
@@ -60,12 +59,26 @@ def get_arguments():
         help="Root directory that contains all dataset folders.",
     )
     parser.add_argument(
+        "--clip-model",
+        dest="clip_model",
+        type=str,
+        choices=["clip_surgery", "detail-clip"],
+        default="clip_surgery",
+        help="Encoder type (default: clip_surgery).",
+    )
+    parser.add_argument(
+        "--clip-checkpoint",
+        dest="clip_checkpoint",
+        type=str,
+        default=None,
+        help="Path to model checkpoint (required for detail-clip).",
+    )
+    parser.add_argument(
         "--backbone",
         dest="backbone",
         type=str,
-        choices=["RN50", "ViT-B/16"],
-        required=True,
-        help="CLIP backbone: RN50 or ViT-B/16.",
+        default="ViT-B/16",
+        help="Vision backbone name passed to the encoder (default: ViT-B/16).",
     )
     parser.add_argument(
         "--wandb-log",
@@ -154,10 +167,17 @@ def main():
 
     os.makedirs("outputs", exist_ok=True)
 
-    # ------------------------------------------------------------------ CLIP
-    print(f"Loading CLIP backbone: {args.backbone}")
-    clip_model, preprocess = clip.load(args.backbone)
-    clip_model.eval()
+    # ------------------------------------------------------------------ Encoder
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading encoder: {args.clip_model} / {args.backbone}")
+
+    encoder_kwargs = {"model_type": args.backbone, "device": device}
+    if args.clip_checkpoint and args.clip_model == "detail-clip":
+        os.environ["DETAILCLIP_CHECKPOINT"] = args.clip_checkpoint
+
+    encoder = create_encoder_instance(args.clip_model, **encoder_kwargs)
+    clip_model = encoder
+    preprocess = encoder.preprocess
 
     # ------------------------------------------------------------------ adapter module
     adapter_module = load_adapter_module(args.method)

@@ -23,7 +23,6 @@ import argparse
 import os
 import sys
 import contextlib
-from pathlib import Path
 
 # Ensure repo root is on path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -114,7 +113,7 @@ def load_split_images(dataset: str, data_root: str, num_samples: int) -> Tuple[L
 # ─── Import context for DetailCLIP ─────────────────────────────────
 
 _DETAILCLIP_DIR = os.path.normpath(
-    os.path.join(REPO_ROOT, "third_party", "detailclip")
+    os.path.join(REPO_ROOT, "third_party", "DetailCLIP")
 )
 
 @contextlib.contextmanager
@@ -139,6 +138,15 @@ def _detailclip_import_context():
 
 
 # ─── Encoder test helpers ──────────────────────────────────────────
+
+_PATCH_SIZE = {"ViT-B/32": 32, "ViT-B/16": 16, "ViT-L/14": 14}
+
+
+def expected_num_tokens(backbone: str, input_size: int = 224) -> int:
+    patch_size = _PATCH_SIZE[backbone]
+    num_patches = (input_size // patch_size) ** 2
+    return num_patches + 1  # +1 for CLS
+
 
 def check_tensor_props(features: torch.Tensor, expected_dim: int, name: str, tolerance: float = 1e-3):
     """Validate that a feature tensor has correct shape and normalization."""
@@ -210,29 +218,48 @@ def test_clip_surgery_encoder(images: List[Image.Image], classnames: List[str],
     # Text encoding
     try:
         text_feats = encoder.encode_text(classnames, prompt_templates=['a photo of {}'])
-        expected_dim = encoder.model.text_projection.shape[1] if hasattr(encoder.model, 'text_projection') else 512
-        # For ViT-B/32 it's 512, ViT-B/16 it's 512, ViT-L/14 it's 768
         check_tensor_props(text_feats, text_feats.shape[1], "text_features")
     except Exception as e:
         print(f"  ✗ Text encoding failed: {e}")
         return {"status": "FAIL", "reason": f"text_encode: {e}"}
 
-    # Image encoding (image-level)
+    # Image encoding — CLS token only
     try:
-        img_feats = encoder.encode_image(images, image_level=True)
-        check_tensor_props(img_feats, img_feats.shape[1], "image_features")
+        img_feats = encoder.encode_image(images, CLS_token_only=True, preprocess=True)
+        check_tensor_props(img_feats, img_feats.shape[1], "image_features (CLS)")
     except Exception as e:
-        print(f"  ✗ Image encoding failed: {e}")
-        return {"status": "FAIL", "reason": f"image_encode: {e}"}
+        print(f"  ✗ CLS encoding failed: {e}")
+        return {"status": "FAIL", "reason": f"image_encode_cls: {e}"}
 
-    # Image encoding (patch-level)
+    # Image encoding — CLS + patches
     try:
-        patch_feats = encoder.encode_image(images, image_level=False)
+        patch_feats = encoder.encode_image(images, CLS_token_only=False, preprocess=True)
         assert patch_feats.dim() == 3, f"patch_features should be 3D, got {patch_feats.dim()}D"
-        print(f"  ✓ patch_features: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+        num_tokens = patch_feats.shape[1]
+        assert num_tokens == expected_num_tokens(backbone), \
+            f"Expected {expected_num_tokens(backbone)} tokens, got {num_tokens}"
+        print(f"  ✓ CLS+patches: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
     except Exception as e:
-        print(f"  ✗ Patch encoding failed: {e}")
-        return {"status": "FAIL", "reason": f"patch_encode: {e}"}
+        print(f"  ✗ CLS+patches encoding failed: {e}")
+        return {"status": "FAIL", "reason": f"image_encode_cls_patches: {e}"}
+
+    # get_patch_embeddings (strips CLS)
+    try:
+        single_tensor = encoder.preprocess_image([images[0]])[0]
+        patch_only = encoder.get_patch_embeddings(single_tensor)
+        assert patch_only.dim() == 2, f"get_patch_embeddings should return [P, D], got {patch_only.dim()}D"
+        print(f"  ✓ get_patch_embeddings: shape={tuple(patch_only.shape)}")
+    except Exception as e:
+        print(f"  ✗ get_patch_embeddings failed: {e}")
+        return {"status": "FAIL", "reason": f"get_patch_embeddings: {e}"}
+
+    # visual property
+    try:
+        assert hasattr(encoder, "visual"), "encoder.visual property missing"
+        print(f"  ✓ encoder.visual accessible")
+    except Exception as e:
+        print(f"  ✗ visual property failed: {e}")
+        return {"status": "FAIL", "reason": f"visual_property: {e}"}
 
     # Similarity check
     try:
@@ -263,13 +290,23 @@ def test_clip_encoder(images: List[Image.Image], classnames: List[str],
         text_feats = encoder.encode_text(classnames, prompt_templates=['a photo of {}'])
         check_tensor_props(text_feats, text_feats.shape[1], "text_features")
 
-        img_feats = encoder.encode_image(images, image_level=True)
-        check_tensor_props(img_feats, img_feats.shape[1], "image_features")
+        img_feats = encoder.encode_image(images, CLS_token_only=True, preprocess=True)
+        check_tensor_props(img_feats, img_feats.shape[1], "image_features (CLS)")
 
-        # Patch-level encoding
-        patch_feats = encoder.encode_image(images, image_level=False)
+        patch_feats = encoder.encode_image(images, CLS_token_only=False, preprocess=True)
         assert patch_feats.dim() == 3, f"patch_features should be 3D, got {patch_feats.dim()}D"
-        print(f"  ✓ patch_features: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+        num_tokens = patch_feats.shape[1]
+        assert num_tokens == expected_num_tokens(backbone), \
+            f"Expected {expected_num_tokens(backbone)} tokens, got {num_tokens}"
+        print(f"  ✓ CLS+patches: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+
+        single_tensor = encoder.preprocess_image([images[0]])[0]
+        patch_only = encoder.get_patch_embeddings(single_tensor)
+        assert patch_only.dim() == 2, f"get_patch_embeddings should return [P, D], got {patch_only.dim()}D"
+        print(f"  ✓ get_patch_embeddings: shape={tuple(patch_only.shape)}")
+
+        assert hasattr(encoder, "visual"), "encoder.visual property missing"
+        print(f"  ✓ encoder.visual accessible")
 
         check_similarity(text_feats, img_feats, "CLIP")
     except Exception as e:
@@ -301,12 +338,26 @@ def test_openclip_encoder(images: List[Image.Image], classnames: List[str],
         return {"status": "SKIP", "reason": str(e)}
 
     try:
-        # OpenClipEncoder uses standard encode_text from base Encoder
         text_feats = encoder.encode_text(classnames)
         check_tensor_props(text_feats, text_feats.shape[1], "text_features")
 
-        img_feats = encoder.encode_image(images, image_level=True)
-        check_tensor_props(img_feats, img_feats.shape[1], "image_features")
+        img_feats = encoder.encode_image(images, CLS_token_only=True, preprocess=True)
+        check_tensor_props(img_feats, img_feats.shape[1], "image_features (CLS)")
+
+        patch_feats = encoder.encode_image(images, CLS_token_only=False, preprocess=True)
+        assert patch_feats.dim() == 3, f"patch_features should be 3D, got {patch_feats.dim()}D"
+        num_tokens = patch_feats.shape[1]
+        assert num_tokens == expected_num_tokens(backbone), \
+            f"Expected {expected_num_tokens(backbone)} tokens, got {num_tokens}"
+        print(f"  ✓ CLS+patches: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+
+        single_tensor = encoder.preprocess_image([images[0]])[0]
+        patch_only = encoder.get_patch_embeddings(single_tensor)
+        assert patch_only.dim() == 2, f"get_patch_embeddings should return [P, D], got {patch_only.dim()}D"
+        print(f"  ✓ get_patch_embeddings: shape={tuple(patch_only.shape)}")
+
+        assert hasattr(encoder, "visual"), "encoder.visual property missing"
+        print(f"  ✓ encoder.visual accessible")
 
         check_similarity(text_feats, img_feats, "OpenCLIP")
     except Exception as e:
@@ -331,7 +382,7 @@ def test_detailclip_encoder(images: List[Image.Image], classnames: List[str],
     except ImportError:
         pass
 
-    # Try 2: import via sys.path manipulation (like clip_factory.py does)
+    # Try 2: import via sys.path manipulation (DetailCLIP's models.py does `from utils import ...`)
     if not detail_clip_available:
         with _detailclip_import_context():
             try:
@@ -363,13 +414,23 @@ def test_detailclip_encoder(images: List[Image.Image], classnames: List[str],
         text_feats = encoder.encode_text(classnames)
         check_tensor_props(text_feats, text_feats.shape[1], "text_features")
 
-        img_feats = encoder.encode_image(images, image_level=True)
-        check_tensor_props(img_feats, img_feats.shape[1], "image_features")
+        img_feats = encoder.encode_image(images, CLS_token_only=True, preprocess=True)
+        check_tensor_props(img_feats, img_feats.shape[1], "image_features (CLS)")
 
-        # Patch-level encoding
-        patch_feats = encoder.encode_image(images, image_level=False)
+        patch_feats = encoder.encode_image(images, CLS_token_only=False, preprocess=True)
         assert patch_feats.dim() == 3, f"patch_features should be 3D, got {patch_feats.dim()}D"
-        print(f"  ✓ patch_features: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+        num_tokens = patch_feats.shape[1]
+        assert num_tokens == expected_num_tokens(backbone), \
+            f"Expected {expected_num_tokens(backbone)} tokens, got {num_tokens}"
+        print(f"  ✓ CLS+patches: shape={tuple(patch_feats.shape)}, norm_ok, no_nan/inf")
+
+        single_tensor = encoder.preprocess_image([images[0]])[0]
+        patch_only = encoder.get_patch_embeddings(single_tensor)
+        assert patch_only.dim() == 2, f"get_patch_embeddings should return [P, D], got {patch_only.dim()}D"
+        print(f"  ✓ get_patch_embeddings: shape={tuple(patch_only.shape)}")
+
+        assert hasattr(encoder, "visual"), "encoder.visual property missing"
+        print(f"  ✓ encoder.visual accessible")
 
         check_similarity(text_feats, img_feats, "DetailCLIP")
     except Exception as e:

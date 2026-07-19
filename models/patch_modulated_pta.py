@@ -148,7 +148,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         dataset_name: str,
     ) -> float:
         # ── Backbone check ──────────────────────────────────────────
-        if not hasattr(clip_model.visual, "positional_embedding"):
+        if not hasattr(clip_model.visual, "positional_embedding") and not hasattr(clip_model.visual, "pos_embed"):
             raise ValueError(
                 "Exp12PatchQualityModulation requires a ViT backbone (ViT-B/16) "
                 "for patch extraction. "
@@ -163,6 +163,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         n_half             = float(self.cfg.get("n_half", 15.0))
         alpha_max          = float(self.cfg.get("proto_alpha_max", 0.2))
         conf_source        = str(self.cfg.get("conf_source", "text"))
+        multi_gate         = bool(self.cfg.get("multi_gate", False))
         # Which logits to use for the confidence gate (step 7):
         #   "text"  — clip_logits (zero-shot CLIP text)
         #   "image" — image_proto_logits (image-level prototype only)
@@ -280,19 +281,31 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 # TODO: knowing that image-prototype net has resulted in better one, why can't I depend on that as well?
                 # TODO: any information from proto itself? maybe the variance of the proto distribution? or the distance between the image and the proto? maybe a combination of these things?
 
-                # 7) Online memory update (patch-level, binary top-1 gate)
+                # 7) Online memory update (patch-level)
                 pred_conf = F.softmax(gate_logits, dim=-1).squeeze(0)
-                top2_vals, top2_idx = pred_conf.topk(min(2, C))
-                best_conf   = float(top2_vals[0].item())
-                second_conf = float(top2_vals[1].item()) if C > 1 else 0.0
-                conf_margin = best_conf - second_conf
-                best_cls    = int(top2_idx[0].item())
 
-                if best_conf > conf_thresh and conf_margin >= conf_margin_thresh:
-                    states[best_cls] = self.patch_level.update_state(
-                        states[best_cls], images, clip_model, feat_norm,
-                        is_high_confidence=True,
-                    )
+                if multi_gate:
+                    # Multi-gate: update ALL classes above conf_thresh
+                    above_thresh = (pred_conf > conf_thresh).nonzero(as_tuple=True)[0]
+                    for cls_idx in above_thresh:
+                        cls = int(cls_idx.item())
+                        states[cls] = self.patch_level.update_state(
+                            states[cls], images, clip_model, feat_norm,
+                            is_high_confidence=True,
+                        )
+                else:
+                    # Default: binary top-1 gate (existing behavior)
+                    top2_vals, top2_idx = pred_conf.topk(min(2, C))
+                    best_conf   = float(top2_vals[0].item())
+                    second_conf = float(top2_vals[1].item()) if C > 1 else 0.0
+                    conf_margin = best_conf - second_conf
+                    best_cls    = int(top2_idx[0].item())
+
+                    if best_conf > conf_thresh and conf_margin >= conf_margin_thresh:
+                        states[best_cls] = self.patch_level.update_state(
+                            states[best_cls], images, clip_model, feat_norm,
+                            is_high_confidence=True,
+                        )
 
                 if i % 500 == 0:
                     running = sum(accuracies) / len(accuracies)

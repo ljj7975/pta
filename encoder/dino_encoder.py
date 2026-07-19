@@ -15,12 +15,12 @@ class DINOEncoder(Encoder):
     def _get_embeddings(self, x):
         raise NotImplementedError
 
-    def _encode_image(self, img_tensors:List, image_level=True, normalize_image_embeddings=True):
+    def _encode_image(self, img_tensors:List, CLS_token_only=True, normalize_image_embeddings=True):
         with torch.no_grad():
             if isinstance(img_tensors, List):
                 img_tensors = torch.stack(img_tensors)
             img_tensors = img_tensors.to(self.device)
-            img_features = self._get_embeddings(img_tensors, image_level)
+            img_features = self._get_embeddings(img_tensors, CLS_token_only)
             if normalize_image_embeddings:
                 img_features = img_features / img_features.norm(dim=-1, keepdim=True)
         return img_features
@@ -38,8 +38,8 @@ class DINOv1Encoder(DINOEncoder):
         self.model.eval()
         self.model_type = model_type
 
-    def _get_embeddings(self, x, image_level=True):
-        assert image_level, 'It supports only image level embedding for DINOv1'
+    def _get_embeddings(self, x, CLS_token_only=True):
+        assert CLS_token_only, 'DINOv1 supports only image level embedding'
         return self.model(x) # [batch, D]
 
 
@@ -49,14 +49,9 @@ class DINOv2Encoder(DINOEncoder):
         self.model.eval()
         self.model_type = model_type
 
-    def _get_embeddings(self, x, image_level=True):
+    def _get_embeddings(self, x, CLS_token_only=True):
         raw_outputs = self.model.forward_features(x)
         img_features = raw_outputs["x_prenorm"] 
-        # if image_level:
-        #     # just CLS token, global image features
-        #     img_features = img_features[:, :1].squeeze(axis=1)  # [batch, D]
-        # else:
-        #     img_features = img_features[:, 1:]  # [batch, patch, D]
         return img_features
     
 
@@ -70,7 +65,7 @@ class DINOv3Encoder(DINOEncoder):
         
         self.model_type = model_type
 
-    def _get_embeddings(self, x, image_level=True):
+    def _get_embeddings(self, x, CLS_token_only=True):
         raw_outputs = self.model.forward_features(x)
         img_features = raw_outputs["x_prenorm"] 
         return img_features

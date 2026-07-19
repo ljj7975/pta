@@ -1,0 +1,15 @@
+README.md
+setup.py
+clip_surgery/__init__.py
+clip_surgery/build_model.py
+clip_surgery/clip.py
+clip_surgery/clip_model.py
+clip_surgery/clip_model_adapter.py
+clip_surgery/clip_surgery_model.py
+clip_surgery/clip_surgery_model_adapter.py
+clip_surgery/simple_tokenizer.py
+clip_surgery.egg-info/PKG-INFO
+clip_surgery.egg-info/SOURCES.txt
+clip_surgery.egg-info/dependency_links.txt
+clip_surgery.egg-info/requires.txt
+clip_surgery.egg-info/top_level.txt

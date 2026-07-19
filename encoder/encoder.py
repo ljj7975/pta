@@ -114,7 +114,23 @@ class Encoder(nn.Module):
 
         return x
     
-    def _encode_image(self, img_tensors: List, image_level=True, normalize_image_embeddings=True):
+    @property
+    def visual(self):
+        return self.model.visual
+
+    def get_patch_embeddings(self, image, exclude_pos=False):
+        """Extract per-patch embeddings (strips CLS token).
+
+        Returns [P, D] where P = num patches (e.g. 196 for ViT-B/16).
+        """
+        with torch.no_grad():
+            if image.dim() == 3:
+                image = image.unsqueeze(0)
+            features = self.encode_image(image, CLS_token_only=False, preprocess=False)
+            patches = features[:, 1:]
+            return patches.squeeze(0)
+
+    def _encode_image(self, img_tensors: List, CLS_token_only=True, normalize_image_embeddings=True):
         with torch.no_grad():
             with self.timer.trace("moving_to_GPU"):
                 if isinstance(img_tensors, List):
@@ -122,29 +138,17 @@ class Encoder(nn.Module):
                 img_tensors = img_tensors.to(self.device)
 
             with self.timer.trace("image_encoding"):
-                # if image_level:
-                #     img_features = self.model.encode_image(img_tensors, normalize=True)
-                # else:
-                #     x = self.model.visual._embeds(img_tensors)
-                #     x = self.model.visual.transformer(x)
-                #     _, img_features = self.model.visual._pool(x)
-
-                #     if self.model.visual.proj is not None:
-                #         img_features = img_features @ self.model.visual.proj
-                #         img_features = img_features / img_features.norm(dim=1, keepdim=True)
-
                 img_features = self._wrap_encode_image(img_tensors)
 
-                if image_level:
-                    # just CLS token, global image features
-                    img_features = img_features[:, :1].squeeze(axis=1)  # [batch, D]
+                if CLS_token_only:
+                    img_features = img_features[:, :1].squeeze(axis=1)  # [B, D]
                 else:
-                    img_features = img_features[:, 1:]  # [batch, patch, D]
+                    img_features = img_features  # [B, 1+P, D] — CLS + patches
 
                 if normalize_image_embeddings:
-                    img_features = img_features / img_features.norm(dim=1, keepdim=True)
+                    img_features = img_features / img_features.norm(dim=-1, keepdim=True)
 
-        return img_features # (B, D)
+        return img_features
     
     def _encode_image_with_context_concat(self, img_tensors: List):
         raise NotImplementedError
@@ -173,7 +177,7 @@ class Encoder(nn.Module):
                     raise ValueError("Missing preprocess_mask operation")
         return img_tensors
 
-    def encode_image(self, imgs: List, image_level=False, preprocess=True, context_mode=None, normalize_image_embeddings=True):
+    def encode_image(self, imgs: List, CLS_token_only=True, preprocess=False, context_mode=None, normalize_image_embeddings=True):
         with self.timer.trace("preprocessing"):
             if preprocess:
                 img_tensors = self.preprocess_image(imgs)
@@ -181,7 +185,7 @@ class Encoder(nn.Module):
                 img_tensors = imgs
                 
         if context_mode is None:
-            outs = self._encode_image(img_tensors, image_level, normalize_image_embeddings=normalize_image_embeddings)
+            outs = self._encode_image(img_tensors, CLS_token_only, normalize_image_embeddings=normalize_image_embeddings)
         elif context_mode == 'concat':
             outs = self._encode_image_with_context_concat(img_tensors)
         else:

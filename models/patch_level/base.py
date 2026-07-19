@@ -60,6 +60,13 @@ def _extract_patch_embeddings(image: torch.Tensor, clip_model, exclude_pos: bool
     (we explicitly do NOT fall back to the global image feature, because the
     whole point of this method is patch-level analysis).
     """
+    # EncoderWrapper provides get_patch_embeddings() — use it directly
+    if hasattr(clip_model, "get_patch_embeddings"):
+        embeds = clip_model.get_patch_embeddings(image, exclude_pos=exclude_pos)
+        if embeds.dim() == 3 and embeds.shape[0] == 1:
+            embeds = embeds.squeeze(0)
+        return embeds
+
     with torch.no_grad():
         model_dtype = clip_model.visual.conv1.weight.dtype
         if exclude_pos:

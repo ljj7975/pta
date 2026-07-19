@@ -17,3 +17,4 @@ tabulate
 fastapi
 uvicorn
 jinja2
+transformers

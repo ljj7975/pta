@@ -27,7 +27,7 @@ class CLIPSurgeryEncoder(Encoder):
         text_features = text_features / text_features.norm(dim=1, keepdim=True)
         return text_features
 
-    def _encode_image(self, img_tensors: List, image_level=True, normalize_image_embeddings=True):
+    def _encode_image(self, img_tensors: List, CLS_token_only=True, normalize_image_embeddings=True):
         with torch.no_grad():
             with self.timer.trace("moving_to_GPU"):
                 if isinstance(img_tensors, List):
@@ -36,10 +36,11 @@ class CLIPSurgeryEncoder(Encoder):
 
             with self.timer.trace("image_encoding"):
                 img_features = self.model.encode_image(img_tensors)
-                # CLIP Surgery ViT returns [B, 197, D] (CLS + patches)
-                # Standard CLIP encode_image returns [B, D]
-                if img_features.dim() == 3 and image_level:
-                    img_features = img_features[:, 0, :]  # take CLS token -> [B, D]
+                if img_features.dim() == 3:
+                    if CLS_token_only:
+                        img_features = img_features[:, 0, :]  # CLS only -> [B, D]
+                    else:
+                        img_features = img_features  # CLS + patches -> [B, 197, D]
                 if normalize_image_embeddings:
                     img_features = img_features / img_features.norm(dim=-1, keepdim=True)
         return img_features
@@ -124,7 +125,7 @@ class DetailClipEncoder(Encoder):
 
         return patch_emb_w_context
 
-    def _encode_image(self, img_tensors: List, image_level=True, normalize_image_embeddings=True):
+    def _encode_image(self, img_tensors: List, CLS_token_only=True, normalize_image_embeddings=True):
         with torch.no_grad():
             with self.timer.trace("moving_to_GPU"):
                 if isinstance(img_tensors, List):
@@ -132,29 +133,18 @@ class DetailClipEncoder(Encoder):
                 img_tensors = img_tensors.to(self.device)
 
             with self.timer.trace("image_encoding"):
-                # if image_level:
-                #     img_features = self.model.encode_image(img_tensors)
-                #     img_features = img_features / img_features.norm(dim=1, keepdim=True)
-                # else:
-                #     img_features, _, _, _ = self.model.visual(img_tensors)
-                #     img_features = img_features[:,1:] @ self.model.image_projection
-                #     img_features = img_features / img_features.norm(dim=1, keepdim=True)
-                # img_features, _, _, _ = self.model.visual(img_tensors)
-                # img_features = img_features @ self.model.image_projection
-
                 img_features, _, _, _ = self.model.visual_ema(img_tensors)
                 img_features = img_features @ self.model.image_projection_e
 
-                if image_level:
-                    # just CLS token, global image features
-                    img_features = img_features[:, :1].squeeze(axis=1)  # [batch, D]
+                if CLS_token_only:
+                    img_features = img_features[:, :1].squeeze(axis=1)  # [B, D]
                 else:
-                    img_features = img_features[:, 1:]  # [batch, patch, D]
+                    img_features = img_features  # CLS + patches -> [B, 197, D]
 
                 if normalize_image_embeddings:
                     img_features = img_features / img_features.norm(dim=-1, keepdim=True)
        
-        return img_features # (B, cls+patches, D)
+        return img_features
 
 # https://github.com/UCSC-VLAA/CLIPS
 class CLIPSEncoder(Encoder):

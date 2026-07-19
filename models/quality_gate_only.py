@@ -90,7 +90,7 @@ class QualityGateOnlyAdapter(BaseAdapter):
         clip_weights,
         dataset_name: str,
     ) -> float:
-        if not hasattr(clip_model.visual, "positional_embedding"):
+        if not hasattr(clip_model.visual, "positional_embedding") and not hasattr(clip_model.visual, "pos_embed"):
             raise ValueError(
                 "QualityGateOnly requires a ViT backbone (ViT-B/16) "
                 "for patch extraction. "

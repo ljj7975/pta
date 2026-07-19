@@ -146,20 +146,12 @@ class ADPretrainedEncoder(Encoder):
         return img_emb
 
     @torch.no_grad()
-    def _encode_image(self, img_tensors, image_level=False, normalize_image_embeddings=True):
-        """
-        Returns:
-            if image_level=True:
-                [B, D]
-            else:
-                [B, 1 + N, D]
-        """
+    def _encode_image(self, img_tensors, CLS_token_only=True, normalize_image_embeddings=True):
         if isinstance(img_tensors, list):
             img_tensors = torch.stack(img_tensors)
 
         img_tensors = img_tensors.to(self.device)
 
-        # 4 DINO feature maps as [B, C, H, W]
         features, cls_tokens = self.backbone.encode_image_from_tensors(
             img_tensors,
         )
@@ -179,7 +171,7 @@ class ADPretrainedEncoder(Encoder):
             normalize_image_embeddings=normalize_image_embeddings,
         )
 
-        if image_level:
+        if CLS_token_only:
             return img_emb[:, 0]  # [B, D]
 
         return img_emb  # [B, 1+N, D]

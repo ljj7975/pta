@@ -2,7 +2,6 @@ import os
 import yaml
 import torch
 import numpy as np
-import clip
 from datasets.imagenet import ImageNet
 from datasets import build_dataset
 from datasets.utils import build_data_loader, AugMixAugmenter
@@ -46,12 +45,9 @@ def clip_classifier(classnames, template, clip_model):
         clip_weights = []
         
         for classname in classnames:
-            # Tokenize the prompts
             classname = classname.replace('_', ' ')
             texts = [t.format(classname) for t in template]
             
-            texts = clip.tokenize(texts).cuda()
-            # prompt ensemble for ImageNet
             class_embeddings = clip_model.encode_text(texts)
             class_embeddings /= class_embeddings.norm(dim=-1, keepdim=True)
             class_embedding = class_embeddings.mean(dim=0)
