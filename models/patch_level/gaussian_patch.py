@@ -202,6 +202,7 @@ class GaussianPatchLevel(BasePatchLevel):
         threshold = topk_vals[-1]
         mask = scores_norm >= threshold
         mask[scores_norm.argmax()] = True  # always keep at least top-1
+
         return mask
 
     def compute_patch_logits(self, images, clip_model, states):
