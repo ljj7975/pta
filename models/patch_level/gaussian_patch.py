@@ -280,23 +280,12 @@ class GaussianPatchLevel(BasePatchLevel):
 
         # ── Augmented views (Option A: concatenate into single k-means pass) ─
         if aug_copies > 0:
-            aug_patch_list = []
-            if keep_mask is not None:
-                # Filtering active: apply same spatial mask to augmented copies
-                aug_patch_list.append(patches_norm)  # already filtered above
-                for _ in range(aug_copies):
-                    aug_img = _augment_image(images)
-                    aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
-                    aug_norm = _safe_normalize(aug_embs)
-                    aug_patch_list.append(aug_norm[keep_mask])  # apply same mask
-            else:
-                # No filtering: original behavior
-                aug_patch_list.append(patches_norm)
-                for _ in range(aug_copies):
-                    aug_img = _augment_image(images)
-                    aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
-                    aug_patch_list.append(_safe_normalize(aug_embs))
-            patches_norm = torch.cat(aug_patch_list, dim=0)  # [(1+aug_copies)*P_filtered, D]
+            aug_patch_list = [patches_norm]  # original (already filtered if keep_mask set)
+            for _ in range(aug_copies):
+                aug_img = _augment_image(images)
+                aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
+                aug_patch_list.append(_safe_normalize(aug_embs))  # augmented: all patches
+            patches_norm = torch.cat(aug_patch_list, dim=0)
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]
