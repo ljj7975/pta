@@ -123,10 +123,13 @@ class GaussianPatchLevel(BasePatchLevel):
         self._text_features = clip_weights.t().float()  # [C, D], L2-normalised per class
         self._text_features = self._text_features / self._text_features.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         
-        # Empty-text baseline: raw tokenization, no templates
+        # Empty-text baseline: raw tokenization, no templates.
+        # Bypass Encoder wrappers (which add prompt templates) by calling the
+        # underlying raw CLIP model's encode_text directly with pre-tokenized tokens.
         tokens = _clip.tokenize([""]).to(device)
+        raw_model = clip_model.model if hasattr(clip_model, "model") else clip_model
         with torch.no_grad():
-            empty_feat = clip_model.encode_text(tokens).float()  # [1, D]
+            empty_feat = raw_model.encode_text(tokens).float()  # [1, D]
             empty_feat = empty_feat / empty_feat.norm(dim=-1, keepdim=True)
         self._empty_text_feat = empty_feat  # [1, D]
         
