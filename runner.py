@@ -62,7 +62,7 @@ def get_arguments():
         "--clip-model",
         dest="clip_model",
         type=str,
-        choices=["clip_surgery", "detail-clip"],
+        choices=["clip", "clip_surgery", "detail-clip"],
         default="clip_surgery",
         help="Encoder type (default: clip_surgery).",
     )

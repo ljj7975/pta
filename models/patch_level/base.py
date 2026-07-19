@@ -42,6 +42,57 @@ def _safe_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.
     return x / x.norm(dim=dim, keepdim=True).clamp(min=eps)
 
 
+def identify_relevant_patches(
+    heatmap: torch.Tensor,
+    top_k_ratio: float = 0.5,
+    min_patches: int = 1,
+) -> torch.Tensor:
+    """
+    Identify relevant patches from a similarity heatmap using top-k thresholding.
+
+    Takes a heatmap of similarity scores (one score per patch), applies min-max
+    normalization, and returns a boolean mask selecting the top-k patches with
+    the highest scores.
+
+    Args:
+        heatmap: [P] tensor of similarity scores (higher = more relevant).
+                 Can be any scale (cosine similarity, surgery scores, etc.).
+        top_k_ratio: Fraction of patches to keep (0.0 to 1.0).
+                     0.5 means keep top 50% of patches.
+        min_patches: Minimum number of patches to always keep (default: 1).
+                     Ensures at least this many patches survive filtering.
+
+    Returns:
+        mask: [P] boolean tensor, True for patches to keep.
+
+    Example:
+        >>> scores = torch.tensor([0.1, 0.5, 0.3, 0.9, 0.2])  # 5 patches
+        >>> mask = identify_relevant_patches(scores, top_k_ratio=0.6)
+        >>> mask
+        tensor([False,  True,  True,  True, False])  # top 3 (60%) kept
+    """
+    P = heatmap.shape[0]
+    top_k = max(min_patches, int(P * top_k_ratio))
+
+    # Min-max normalize scores to [0, 1]
+    s_min, s_max = heatmap.min(), heatmap.max()
+    if s_max > s_min:
+        scores_norm = (heatmap - s_min) / (s_max - s_min)
+    else:
+        # Degenerate case: all scores identical → keep all
+        return torch.ones(P, dtype=torch.bool, device=heatmap.device)
+
+    # Top-k threshold: keep patches with scores >= k-th highest score
+    topk_vals, _ = scores_norm.topk(top_k)
+    threshold = topk_vals[-1]
+    mask = scores_norm >= threshold
+
+    # Safety: always keep at least min_patches (the highest scoring one)
+    mask[scores_norm.argmax()] = True
+
+    return mask
+
+
 def _extract_patch_embeddings(image: torch.Tensor, clip_model, exclude_pos: bool = False) -> torch.Tensor:
     """
     Ask CLIP's vision encoder for per-patch embeddings instead of one global summary.

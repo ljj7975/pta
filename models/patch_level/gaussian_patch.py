@@ -15,8 +15,10 @@ from models.patch_level.base import (
     BasePatchLevel,
     _safe_normalize,
     _extract_patch_embeddings,
+    _extract_all_tokens,
     _incremental_kmeans_step,
     _gaussian_score_for_class,
+    identify_relevant_patches,
 )
 
 
@@ -191,19 +193,8 @@ class GaussianPatchLevel(BasePatchLevel):
             # Unknown mode — return all patches (safe fallback)
             return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
         
-        # --- Min-max normalize + top-k threshold ---
-        s_min, s_max = scores.min(), scores.max()
-        if s_max > s_min:
-            scores_norm = (scores - s_min) / (s_max - s_min)
-        else:
-            scores_norm = torch.ones_like(scores)  # degenerate: keep all
-        
-        topk_vals, _ = scores_norm.topk(top_k)
-        threshold = topk_vals[-1]
-        mask = scores_norm >= threshold
-        mask[scores_norm.argmax()] = True  # always keep at least top-1
-
-        return mask
+        # Use utility function to identify relevant patches from heatmap
+        return identify_relevant_patches(scores, top_k_ratio=self._filter_top_k_ratio, min_patches=1)
 
     def compute_patch_logits(self, images, clip_model, states):
         # ── Config ────────────────────────────────────────────────────────────

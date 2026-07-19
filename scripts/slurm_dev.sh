@@ -7,7 +7,7 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-9
+#SBATCH --array=0-44
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_benchmark_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_benchmark_%x-%A_%a.err
 
@@ -79,18 +79,18 @@ exp() {
 }
 
 # ── CLIPSurgery ──────────────────────────────────────────────────────
-# exp zeroshot            configs                       clip_surgery    ""                           "ZeroShot-CLIPSurgery"
-# exp pta                 configs                       clip_surgery    ""                           "PTA-CLIPSurgery"
-# exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CLIPSurgery"
+exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CLIPSurgery"
+exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CLIPSurgery"
+exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CLIPSurgery"
 
-# ── Regular CLIP (vanilla OpenAI CLIP) ──────────────────────────────
-# exp zeroshot            configs                       clip            ""                           "ZeroShot-CLIP"
-# exp pta                 configs                       clip            ""                           "PTA-CLIP"
-# exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP"
+# ── Regular CLIP ────────────────────────────────────────────────────
+exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP"
+exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP"
+exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP"
 
 # ── DetailCLIP ──────────────────────────────────────────────────────
-# exp zeroshot            configs                       detail-clip     ""  "ZeroShot-DetailCLIP"
-exp pta                 configs                       detail-clip     ""  "PTA-DetailCLIP"
+exp zeroshot            configs/PTA                   detail-clip     ""  "ZeroShot-DetailCLIP"
+exp pta                 configs/PTA                   detail-clip     ""  "PTA-DetailCLIP"
 exp patch_modulated_pta configs/patch_modulated_pta   detail-clip     ""  "PatchModPTA-DetailCLIP"
 
 # ---------------------------------------------------------------------------

@@ -150,9 +150,10 @@ class PTAAdapter(BaseAdapter):
         print(f"---- PTA's test accuracy: {final_acc:.2f}. ----\n")
 
         # Append results to output file (append mode, multiple runs accumulate)
+        label = os.environ.get("RESULT_LABEL", "PTA")
         with open("outputs/result.txt", "a") as f:
             f.write(
-                f"PTA's performance on {dataset_name}: Top1- {final_acc:.2f}.\n"
+                f"{label}'s performance on {dataset_name}: Top1- {final_acc:.2f}.\n"
             )
 
         return final_acc
