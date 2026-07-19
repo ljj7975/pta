@@ -158,7 +158,10 @@ class GaussianPatchLevel(BasePatchLevel):
         
         # --- Precomputed scores fast-path (surgery modes from adapter) ---
         if precomputed_scores is not None and self._filter_mode in ("surgery_with_labels", "surgery_no_labels"):
-            scores = precomputed_scores.float()  # [P]
+            scores = precomputed_scores.float()  # [P_original]
+            n_views = 1 + int(self._cfg.get("aug_copies", 0))
+            if scores.shape[0] < patches_norm.shape[0]:
+                scores = scores.repeat(n_views)[:patches_norm.shape[0]]
         # --- Mode: cosine_with_labels ---
         elif self._filter_mode == "cosine_with_labels":
             # Relative specificity: target score minus mean-other-class score
@@ -260,7 +263,16 @@ class GaussianPatchLevel(BasePatchLevel):
         patch_embs = _extract_patch_embeddings(images, clip_model, exclude_pos=exclude_pos)
         patches_norm = _safe_normalize(patch_embs)  # [P, D]
 
-        # ── Patch relevance filtering ────────────────────────────────────────
+        # ── Augmented views (concatenate first, then filter all) ──────────────
+        if aug_copies > 0:
+            aug_patch_list = [patches_norm]  # original view (unfiltered)
+            for _ in range(aug_copies):
+                aug_img = _augment_image(images)
+                aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
+                aug_patch_list.append(_safe_normalize(aug_embs))  # augmented views
+            patches_norm = torch.cat(aug_patch_list, dim=0)  # [(1+aug_copies)*P, D]
+
+        # ── Patch relevance filtering (on full concatenated pool) ──────────────
         filter_mode = self._cfg.get("patch_filter_mode", "none")
         keep_mask = None
         if (filter_mode != "none"
@@ -276,16 +288,7 @@ class GaussianPatchLevel(BasePatchLevel):
                 all_tokens=all_tokens_for_filter,
                 precomputed_scores=filter_scores,
             )
-            patches_norm = patches_norm[keep_mask]  # [P_filtered, D]
-
-        # ── Augmented views (Option A: concatenate into single k-means pass) ─
-        if aug_copies > 0:
-            aug_patch_list = [patches_norm]  # original (already filtered if keep_mask set)
-            for _ in range(aug_copies):
-                aug_img = _augment_image(images)
-                aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
-                aug_patch_list.append(_safe_normalize(aug_embs))  # augmented: all patches
-            patches_norm = torch.cat(aug_patch_list, dim=0)
+            patches_norm = patches_norm[keep_mask]  # [P_filtered, D] where P_filtered ≈ (1+aug_copies)*P/2
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]
