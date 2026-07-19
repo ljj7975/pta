@@ -9,6 +9,7 @@ be composed into a full adapter (e.g., via PTA's multi-component setup).
 """
 import torch
 import torchvision.transforms.functional as TF
+import clip as _clip  # local vendored CLIP — for tokenize()
 
 from models.patch_level.base import (
     BasePatchLevel,
@@ -109,6 +110,94 @@ class GaussianPatchLevel(BasePatchLevel):
             for _ in range(C)
         ]
 
+    def set_text_context(self, clip_weights, clip_model, device):
+        """Cache text features and empty-text baseline for patch filtering.
+        
+        Must be called once before the TTA loop when patch_filter_mode != "none".
+        
+        Args:
+            clip_weights: [D, C] CLIP text weight matrix
+            clip_model: CLIP model (for encoding empty text)
+            device: torch device
+        """
+        self._text_features = clip_weights.t().float()  # [C, D], L2-normalised per class
+        self._text_features = self._text_features / self._text_features.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        
+        # Empty-text baseline: raw tokenization, no templates
+        tokens = _clip.tokenize([""]).to(device)
+        with torch.no_grad():
+            empty_feat = clip_model.encode_text(tokens).float()  # [1, D]
+            empty_feat = empty_feat / empty_feat.norm(dim=-1, keepdim=True)
+        self._empty_text_feat = empty_feat  # [1, D]
+        
+        self._filter_mode = self._cfg.get("patch_filter_mode", "none")
+        self._filter_top_k_ratio = float(self._cfg.get("patch_filter_top_k_ratio", 0.5))
+
+    def _filter_patches_by_text_alignment(self, patches_norm, target_class_idx,
+                                           all_tokens=None, precomputed_scores=None):
+        """Compute per-patch text-alignment scores and return a boolean keep-mask.
+        
+        Args:
+            patches_norm: [P, D] L2-normalised patch embeddings
+            target_class_idx: int, index of the target class
+            all_tokens: [B, 1+P, D] all vision tokens (CLS + patches), needed for surgery modes
+            precomputed_scores: [P] tensor of pre-computed similarity scores (surgery modes only)
+        
+        Returns:
+            mask: [P] bool tensor, True for patches to keep
+        """
+        P = patches_norm.shape[0]
+        
+        if not hasattr(self, "_text_features") or self._filter_mode == "none":
+            return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        
+        top_k = max(1, int(P * self._filter_top_k_ratio))
+        
+        # --- Precomputed scores fast-path (surgery modes from adapter) ---
+        if precomputed_scores is not None and self._filter_mode in ("surgery_with_labels", "surgery_no_labels"):
+            scores = precomputed_scores.float()  # [P]
+        # --- Mode: cosine_with_labels ---
+        elif self._filter_mode == "cosine_with_labels":
+            # Relative specificity: target score minus mean-other-class score
+            sim = patches_norm @ self._text_features.T  # [P, C]
+            target_score = sim[:, target_class_idx]  # [P]
+            other_mean = (sim.sum(1) - target_score) / max(sim.shape[1] - 1, 1)  # [P]
+            scores = target_score - other_mean  # [P]
+        # --- Mode: cosine_no_labels ---
+        elif self._filter_mode == "cosine_no_labels":
+            target_feat = self._text_features[target_class_idx]  # [D]
+            adjusted = target_feat - self._empty_text_feat.squeeze(0)  # [D]
+            adjusted = adjusted / adjusted.norm().clamp(min=1e-8)
+            scores = patches_norm @ adjusted  # [P]
+        # --- Mode: surgery_with_labels (fallback — no precomputed) ---
+        elif self._filter_mode == "surgery_with_labels":
+            from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
+            sim = clip_feature_surgery(all_tokens.float(), self._text_features.float())  # [B, 1+P, C]
+            scores = sim[0, 1:, target_class_idx]  # [P] — skip CLS token (index 0)
+        # --- Mode: surgery_no_labels (fallback — no precomputed) ---
+        elif self._filter_mode == "surgery_no_labels":
+            from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
+            target_feat = self._text_features[target_class_idx].unsqueeze(0)  # [1, D]
+            sim = clip_feature_surgery(all_tokens.float(), target_feat.float(),
+                                       redundant_feats=self._empty_text_feat.float())  # [B, 1+P, 1]
+            scores = sim[0, 1:, 0]  # [P]
+        else:
+            # Unknown mode — return all patches (safe fallback)
+            return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        
+        # --- Min-max normalize + top-k threshold ---
+        s_min, s_max = scores.min(), scores.max()
+        if s_max > s_min:
+            scores_norm = (scores - s_min) / (s_max - s_min)
+        else:
+            scores_norm = torch.ones_like(scores)  # degenerate: keep all
+        
+        topk_vals, _ = scores_norm.topk(top_k)
+        threshold = topk_vals[-1]
+        mask = scores_norm >= threshold
+        mask[scores_norm.argmax()] = True  # always keep at least top-1
+        return mask
+
     def compute_patch_logits(self, images, clip_model, states):
         # ── Config ────────────────────────────────────────────────────────────
         exclude_pos = bool(self._cfg.get("exclude_pos", False))
@@ -148,7 +237,8 @@ class GaussianPatchLevel(BasePatchLevel):
 
         return raw_proto, quality_gate
 
-    def update_state(self, state, images, clip_model, global_feat, is_high_confidence):
+    def update_state(self, state, images, clip_model, global_feat, is_high_confidence,
+                     *, filter_scores=None, target_class_idx=None):
         if not is_high_confidence:
             return state
 
@@ -167,14 +257,43 @@ class GaussianPatchLevel(BasePatchLevel):
         patch_embs = _extract_patch_embeddings(images, clip_model, exclude_pos=exclude_pos)
         patches_norm = _safe_normalize(patch_embs)  # [P, D]
 
+        # ── Patch relevance filtering ────────────────────────────────────────
+        filter_mode = self._cfg.get("patch_filter_mode", "none")
+        keep_mask = None
+        if (filter_mode != "none"
+                and hasattr(self, "_text_features")
+                and target_class_idx is not None):
+            # For surgery modes without precomputed scores, extract all tokens
+            all_tokens_for_filter = None
+            if filter_mode in ("surgery_with_labels", "surgery_no_labels") and filter_scores is None:
+                from models.patch_level.base import _extract_all_tokens
+                all_tokens_for_filter = _extract_all_tokens(images, clip_model)
+            keep_mask = self._filter_patches_by_text_alignment(
+                patches_norm, target_class_idx,
+                all_tokens=all_tokens_for_filter,
+                precomputed_scores=filter_scores,
+            )
+            patches_norm = patches_norm[keep_mask]  # [P_filtered, D]
+
         # ── Augmented views (Option A: concatenate into single k-means pass) ─
         if aug_copies > 0:
-            aug_patch_list = [patches_norm]
-            for _ in range(aug_copies):
-                aug_img = _augment_image(images)
-                aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
-                aug_patch_list.append(_safe_normalize(aug_embs))
-            patches_norm = torch.cat(aug_patch_list, dim=0)  # [(1+aug_copies)*P, D]
+            aug_patch_list = []
+            if keep_mask is not None:
+                # Filtering active: apply same spatial mask to augmented copies
+                aug_patch_list.append(patches_norm)  # already filtered above
+                for _ in range(aug_copies):
+                    aug_img = _augment_image(images)
+                    aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
+                    aug_norm = _safe_normalize(aug_embs)
+                    aug_patch_list.append(aug_norm[keep_mask])  # apply same mask
+            else:
+                # No filtering: original behavior
+                aug_patch_list.append(patches_norm)
+                for _ in range(aug_copies):
+                    aug_img = _augment_image(images)
+                    aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
+                    aug_patch_list.append(_safe_normalize(aug_embs))
+            patches_norm = torch.cat(aug_patch_list, dim=0)  # [(1+aug_copies)*P_filtered, D]
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]

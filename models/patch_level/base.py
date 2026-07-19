@@ -25,7 +25,8 @@ class BasePatchLevel(ABC):
         ...
 
     @abstractmethod
-    def update_state(self, state, images, clip_model, global_feat, is_high_confidence):
+    def update_state(self, state, images, clip_model, global_feat, is_high_confidence,
+                     *, filter_scores=None, target_class_idx=None):
         """Update state dict for high-confidence samples."""
         ...
 
@@ -93,6 +94,37 @@ def _extract_patch_embeddings(image: torch.Tensor, clip_model, exclude_pos: bool
         )
 
     return embeds.float()  # [P, D]  P = num patches, D = feature dimension
+
+
+def _extract_all_tokens(image: torch.Tensor, clip_model) -> torch.Tensor:
+    """
+    Extract all vision tokens (CLS + patch tokens) from the CLIP encoder.
+
+    A ViT produces 1 CLS token + P patch tokens. This returns all of them
+    as a single [B, 1+P, D] tensor, used by CLIP Surgery filter modes.
+
+    Path A — Encoder wrapper: clip_model.encode_image(CLS_token_only=False)
+             already returns [B, 1+P, D] normalised (encoder/encoder.py:97-115).
+    Path B — raw CLIP model: clip_model.visual(image, return_patches=True) gives
+             [B, P, D] (CLS stripped); we prepend the CLS token manually.
+    """
+    # EncoderWrapper provides encode_image with CLS_token_only param
+    if hasattr(clip_model, "get_patch_embeddings"):
+        with torch.no_grad():
+            all_tokens = clip_model.encode_image(image, CLS_token_only=False)
+            # Returns [B, 1+P, D], already L2-normalised per token
+        return all_tokens
+
+    # Raw CLIP model — replicate the two-stage extraction
+    with torch.no_grad():
+        model_dtype = clip_model.visual.conv1.weight.dtype
+        patch_tokens = clip_model.visual(image.to(model_dtype), return_patches=True)
+        # patch_tokens: [B, P, D]  (CLS already stripped by VisualTransformer, clip/model.py:244-248)
+        cls_token = clip_model.encode_image(image.to(model_dtype))  # [B, D]
+    all_tokens = torch.cat([cls_token.unsqueeze(1), patch_tokens], dim=1)  # [B, 1+P, D]
+    # L2-normalise per token to match Path A output convention
+    all_tokens = all_tokens / all_tokens.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+    return all_tokens
 
 
 def _incremental_kmeans_step(
