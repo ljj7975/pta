@@ -6,6 +6,7 @@ from .clip_encoder import *
 
 ENCODER_MAP = {
     'clip_surgery': CLIPSurgeryEncoder,
+    'clip': CLIPEncoder,
     # 'open-clip': OpenClipEncoder,w
     # 'bridge_tower': BridgeTowerEncoder,
     'detail-clip': DetailClipEncoder,

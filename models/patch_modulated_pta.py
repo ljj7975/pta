@@ -277,9 +277,6 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
-                
-                # TODO: knowing that image-prototype net has resulted in better one, why can't I depend on that as well?
-                # TODO: any information from proto itself? maybe the variance of the proto distribution? or the distance between the image and the proto? maybe a combination of these things?
 
                 # 7) Online memory update (patch-level)
                 pred_conf = F.softmax(gate_logits, dim=-1).squeeze(0)

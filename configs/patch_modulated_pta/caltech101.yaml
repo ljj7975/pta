@@ -1,0 +1,5 @@
+defaults:
+  - patch_modulated_pta
+
+image_level:
+  T: 50.0

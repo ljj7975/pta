@@ -1,0 +1,12 @@
+# Patch-Modulated PTA method defaults — inherits shared base.
+
+defaults:
+  - ../base
+
+patch_level:
+  conf_margin_threshold: 0.00
+  aug_copies: 15
+
+fusion:
+  tau_image_proto: 80.0
+  tau_patch_proto: 20.0

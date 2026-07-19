@@ -48,21 +48,22 @@ class CLIPSurgeryEncoder(Encoder):
 
 class CLIPEncoder(CLIPSurgeryEncoder):
     """
-    CLIP Encoder that loads a CLIP model for text and image encoding.
+    Standard CLIP Encoder (not CLIP Surgery).
+
+    Loads a vanilla OpenAI CLIP model via the CLIP Surgery library's loader
+    (which supports both regular CLIP and CLIP Surgery checkpoints).
     """
 
-    # def __init__(self, model_type='ViT-B/32', mode='eval', adapter=False, device='cpu'):
-    #     super().__init__(model_type, mode, adapter, device)
-    #     self.mode = mode
-    #     self.adapter = adapter
-    #     self.model, self.preprocess = clip_surgery.load(f"{model_type}", adapter=adapter, device=device)
-
-    #     if self.mode == 'train':
-    #         self.model.train()
-    #     elif self.mode == 'eval':
-    #         self.model.eval()
-    #     else:
-    #         raise ValueError(f"Invalid mode: {mode}")
+    def __init__(self, model_type='ViT-B/16', device='cpu'):
+        if not hasattr(self, "initialized"):
+            # Skip CLIPSurgeryEncoder.__init__ to avoid "CS-" prefix loading;
+            # call Encoder.__init__ directly for transforms/setup.
+            super(CLIPSurgeryEncoder, self).__init__(model_type, device)
+            self.model, clip_preprocess = clip_surgery.load(model_type, device=device)
+            self.preprocess = clip_preprocess
+            self.preprocess_for_torch = transform_for_torch(self.image_size)
+            self.model.eval()
+            self.initialized = True
 
 
 class OpenClipEncoder(Encoder):

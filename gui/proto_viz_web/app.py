@@ -10,9 +10,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import yaml
+from omegaconf import OmegaConf, DictConfig
 from pydantic import BaseModel
 
+from utils import _resolve_config_chain
 from utils.proto_viz_session import ProtoVizSession, list_available_datasets
 
 
@@ -45,8 +46,8 @@ def _asset_version() -> int:
 class LoadRequest(BaseModel):
     mode: str = "live"
     dataset: str = "eurosat"
-    config: str = "configs_patch_modulated_pta"
-    config_dir: str = "configs_patch_modulated_pta"
+    config: str = "configs/patch_modulated_pta"
+    config_dir: str = "configs/patch_modulated_pta"
     backbone: str = "ViT-B/16"
     data_root: str = "./data"
     n_samples: int = 200
@@ -98,7 +99,7 @@ def create_app(preload_records: Optional[str] = None) -> FastAPI:
         )
 
     @app.get("/api/status")
-    def status(config_dir: str = "configs_patch_modulated_pta",
+    def status(config_dir: str = "configs/patch_modulated_pta",
                selected_class_name: Optional[str] = None):
         if not session.loaded:
             return {
@@ -178,8 +179,7 @@ def create_app(preload_records: Optional[str] = None) -> FastAPI:
         config_path = os.path.join(_REPO_ROOT, req.config_dir, f"{req.dataset}.yaml")
         if not os.path.isfile(config_path):
             raise HTTPException(status_code=404, detail=f"Config not found: {config_path}")
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+        config = _resolve_config_chain(config_path)
         return {"ok": True, "config": config, "path": config_path}
 
     @app.post("/api/config/save-temp")
@@ -187,8 +187,7 @@ def create_app(preload_records: Optional[str] = None) -> FastAPI:
         config_path = os.path.join(_REPO_ROOT, req.config_dir, f"{req.dataset}.yaml")
         if not os.path.isfile(config_path):
             raise HTTPException(status_code=404, detail=f"Config not found: {config_path}")
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+        config = _resolve_config_chain(config_path)
         for key, value in req.overrides.items():
             if isinstance(value, dict) and isinstance(config.get(key), dict):
                 config[key].update(value)
@@ -199,7 +198,7 @@ def create_app(preload_records: Optional[str] = None) -> FastAPI:
         temp_name = f"{req.config_dir}_{req.dataset}_{ts}.yaml"
         temp_path = os.path.join(_TMP_CONFIGS_DIR, temp_name)
         with open(temp_path, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            OmegaConf.save(OmegaConf.create(config), f)
         return {"ok": True, "temp_path": temp_path, "config": config}
 
     @app.post("/api/config/cleanup")

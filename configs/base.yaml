@@ -1,7 +1,11 @@
+# Shared defaults for all TTA methods.
+# Each method directory has its own base that inherits from this file,
+# and each per-dataset config inherits from the method base.
+
 image_level:
   type: PTAImageLevel
   alpha: 0.01
-  T: 50.0
+  T: 20.0
 
 patch_level:
   type: GaussianPatchLevel
@@ -22,6 +26,3 @@ patch_level:
 fusion:
   type: ProtoAlphaFusion
   tau_text: 1.0
-  tau_image_proto: 100.0
-  tau_patch_proto: 20.0
-  quality_modulation: 1.0

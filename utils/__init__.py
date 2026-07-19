@@ -1,7 +1,7 @@
 import os
-import yaml
 import torch
 import numpy as np
+from omegaconf import OmegaConf, DictConfig
 from datasets.imagenet import ImageNet
 from datasets import build_dataset
 from datasets.utils import build_data_loader, AugMixAugmenter
@@ -100,6 +100,34 @@ def get_ood_preprocess():
     return aug_preprocess
 
 
+def _resolve_config_chain(config_file: str) -> dict:
+    """Load a YAML config and recursively resolve its ``defaults`` list.
+
+    Each entry in ``defaults`` is a path (relative to the current file's
+    directory, without the ``.yaml`` extension) to a parent config.
+    Parents are merged in order, with the current file's values taking
+    precedence.  Returns a plain dict.
+    """
+    cfg: DictConfig = OmegaConf.load(config_file)
+
+    if "defaults" not in cfg:
+        OmegaConf.resolve(cfg)
+        return dict(OmegaConf.to_container(cfg))  # type: ignore[arg-type]
+
+    defaults: list = list(cfg.pop("defaults"))
+    config_dir = os.path.dirname(os.path.abspath(config_file))
+
+    parents: list[DictConfig] = []
+    for ref in defaults:
+        parent_path = os.path.normpath(os.path.join(config_dir, ref + ".yaml"))
+        parent_dict = _resolve_config_chain(parent_path)
+        parents.append(OmegaConf.create(parent_dict))
+
+    merged = OmegaConf.merge(*parents, cfg)
+    OmegaConf.resolve(merged)
+    return dict(OmegaConf.to_container(merged))  # type: ignore[arg-type]
+
+
 def get_config_file(config_path, dataset_name):
     if config_path.endswith(".yaml") and os.path.isfile(config_path):
         config_file = config_path
@@ -115,8 +143,7 @@ def get_config_file(config_path, dataset_name):
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"The configuration file {config_file} was not found.")
 
-    with open(config_file, 'r') as file:
-        cfg = yaml.load(file, Loader=yaml.SafeLoader)
+    cfg = _resolve_config_chain(config_file)
 
     return cfg
 
