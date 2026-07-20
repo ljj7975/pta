@@ -70,8 +70,8 @@ class PTAAdapter(BaseAdapter):
     def run(
         self,
         loader,
-        clip_model,
-        clip_weights,
+        encoder,
+        text_embeddings,
         dataset_name: str,
     ) -> float:
         """
@@ -83,8 +83,8 @@ class PTAAdapter(BaseAdapter):
             accuracies = []                                     # Track per-sample accuracy
 
             # Initialize refined text features as original CLIP text embeddings
-            # clip_weights: [D, C] -> transpose to [C, D]
-            refine_feature = clip_weights.t().float()           # [C, D]
+            # text_embeddings: [D, C] -> transpose to [C, D]
+            refine_feature = text_embeddings.t().float()           # [C, D]
 
             # Initialize prototype bank with zeros (filled by first samples via EMA)
             target_prototype = self.image_level.init_state(
@@ -106,7 +106,7 @@ class PTAAdapter(BaseAdapter):
 
                 # ── ZERO-SHOT PREDICTION ───────────────────────────────────
                 image_features, clip_logits, _, _, _ = get_clip_logits(
-                    images, clip_model, clip_weights
+                    images, encoder, text_embeddings
                 )
 
                 target = target.cuda()

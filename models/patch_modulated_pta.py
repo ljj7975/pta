@@ -25,7 +25,8 @@ from tqdm import tqdm
 from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.patch_level import create as create_patch_level
-from models.patch_level.base import _alpha_from_evidence, _safe_normalize
+from models.patch_level.base import _alpha_from_evidence
+from utils.clip_inference import _safe_normalize
 from models.fusion import QualityGatedFusion, ProtoAlphaFusion
 
 # Map of fusion type strings to classes.
@@ -143,16 +144,16 @@ class PatchModulatedPTAAdapter(BaseAdapter):
     def run(
         self,
         loader,
-        clip_model,
-        clip_weights,
+        encoder,
+        text_embeddings,
         dataset_name: str,
     ) -> float:
         # ── Backbone check ──────────────────────────────────────────
-        if not hasattr(clip_model.visual, "positional_embedding") and not hasattr(clip_model.visual, "pos_embed"):
+        if not hasattr(encoder.visual, "positional_embedding") and not hasattr(encoder.visual, "pos_embed"):
             raise ValueError(
                 "Exp12PatchQualityModulation requires a ViT backbone (ViT-B/16) "
                 "for patch extraction. "
-                f"Got: {type(clip_model.visual).__name__}"
+                f"Got: {type(encoder.visual).__name__}"
             )
 
         # ── Config ──────────────────────────────────────────────────
@@ -178,13 +179,13 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
         os.makedirs("outputs", exist_ok=True)
 
-        text_proto = _safe_normalize(clip_weights.t().float())  # [C, D]
+        text_proto = _safe_normalize(text_embeddings.t().float())  # [C, D]
         C, D       = text_proto.shape
         device     = text_proto.device
 
         # ── Dual prototype systems ──────────────────────────────────
         # Image-level (PTA-style)
-        refine_feature   = clip_weights.t().float()   # [C, D]
+        refine_feature   = text_embeddings.t().float()   # [C, D]
         target_prototype = self.image_level.init_state(refine_feature)
 
         # Patch-level (Gaussian-style)
@@ -193,7 +194,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         # Initialise patch-level text context for filtering (no-op if patch_filter_mode=none)
         _filter_mode = self.cfg.get("patch_level", {}).get("patch_filter_mode", "none")
         if _filter_mode != "none":
-            self.patch_level.set_text_context(clip_weights, clip_model, device)
+            self.patch_level.set_text_context(text_embeddings, encoder, device)
 
         max_batches = int(os.environ.get("MAX_BATCHES", "0"))
         accuracies = []
@@ -210,21 +211,9 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     images = images.to(device)
                 target = target.to(device)
 
-                _surgery_precomputed = None
-                if _filter_mode in ("surgery_with_labels", "surgery_no_labels"):
-                    from models.patch_level.base import _extract_all_tokens
-                    from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
-                    _all_tokens = _extract_all_tokens(images, clip_model)  # [1, 1+P, D]
-                    _tf = self.patch_level._text_features.float()  # [C, D]
-                    if _filter_mode == "surgery_with_labels":
-                        _surgery_precomputed = clip_feature_surgery(_all_tokens.float(), _tf)  # [1, 1+P, C]
-                    else:
-                        _ef = self.patch_level._empty_text_feat.float()  # [1, D]
-                        _surgery_precomputed = clip_feature_surgery(_all_tokens.float(), _tf, redundant_feats=_ef)  # [1, 1+P, C]
-
                 # 1) CLIP forward
                 image_features, clip_logits, _, _, _ = get_clip_logits(
-                    images, clip_model, clip_weights
+                    images, encoder, text_embeddings
                 )
                 feat      = image_features.squeeze(0).float()
                 feat_norm = _safe_normalize(feat)
@@ -233,7 +222,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 #    (computed BEFORE image-level update so quality_gate
                 #     can modulate the EMA rate)
                 patch_proto_logits, quality_gate = (
-                    self.patch_level.compute_patch_logits(images, clip_model, states)
+                    self.patch_level.compute_patch_logits(images, encoder, states)
                 )
 
                 # 3) Adaptive evidence weighting for patch-level contribution
@@ -304,9 +293,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     for cls_idx in above_thresh:
                         cls = int(cls_idx.item())
                         states[cls] = self.patch_level.update_state(
-                            states[cls], images, clip_model, feat_norm,
-                            is_high_confidence=True,
-                            filter_scores=_surgery_precomputed[0, 1:, cls] if _surgery_precomputed is not None else None,
+                            states[cls], images, encoder, feat_norm,
                             target_class_idx=cls,
                         )
                 else:
@@ -319,9 +306,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
                     if best_conf > conf_thresh and conf_margin >= conf_margin_thresh:
                         states[best_cls] = self.patch_level.update_state(
-                            states[best_cls], images, clip_model, feat_norm,
-                            is_high_confidence=True,
-                            filter_scores=_surgery_precomputed[0, 1:, best_cls] if _surgery_precomputed is not None else None,
+                            states[best_cls], images, encoder, feat_norm,
                             target_class_idx=best_cls,
                         )
 
@@ -341,9 +326,9 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
         return final_acc
 
-    def refine_with(self, clip_model, clip_weights, data_loader, dataset_name):
+    def refine_with(self, encoder, text_embeddings, data_loader, dataset_name):
         """Convenience alias for run()."""
-        return self.run(data_loader, clip_model, clip_weights, dataset_name)
+        return self.run(data_loader, encoder, text_embeddings, dataset_name)
 
 
 def build(cfg: dict) -> PatchModulatedPTAAdapter:

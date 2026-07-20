@@ -53,8 +53,8 @@ class BaseAdapter(ABC):
     def run(
         self,
         loader: Any,
-        clip_model: Any,
-        clip_weights: Any,
+        encoder: Any,
+        text_embeddings: Any,
         dataset_name: str,
     ) -> float:
         """
@@ -70,21 +70,21 @@ class BaseAdapter(ABC):
              e. Record accuracy
 
         Args:
-            loader:       PyTorch DataLoader iterating over the test split.
-                         Yields (image_batch, label_batch) tuples.
-                         Note: batch_size=1 is hardcoded (TTA processes one at a time).
+            loader:           PyTorch DataLoader iterating over the test split.
+                             Yields (image_batch, label_batch) tuples.
+                             Note: batch_size=1 is hardcoded (TTA processes one at a time).
 
-            clip_model:   Pre-loaded CLIP model (already on CUDA, eval mode).
-                         Call clip_model.encode_image(images) to get features,
-                         or use get_clip_logits() helper from utils.py.
+            encoder:          Pre-loaded CLIP encoder (already on CUDA, eval mode).
+                             Call encoder.encode_image(images) to get features,
+                             or use get_clip_logits() helper from utils.py.
 
-            clip_weights: Pre-computed text-feature matrix of shape (D, C) on CUDA.
-                         D = feature dimension (e.g. 512 for CLIP-ViT).
-                         C = number of classes.
-                         Transpose to get [C, D] for cosine similarity against images.
+            text_embeddings:  Pre-computed text-feature matrix of shape (D, C) on CUDA.
+                             D = feature dimension (e.g. 512 for CLIP-ViT).
+                             C = number of classes.
+                             Transpose to get [C, D] for cosine similarity against images.
 
-            dataset_name: Human-readable dataset name (e.g., "caltech101").
-                         Used for logging and writing to outputs/result.txt.
+            dataset_name:     Human-readable dataset name (e.g., "caltech101").
+                             Used for logging and writing to outputs/result.txt.
 
         Returns:
             Top-1 accuracy (float, 0-100). Should also write results to

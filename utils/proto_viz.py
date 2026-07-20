@@ -83,12 +83,8 @@ _PTA_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PTA_ROOT not in sys.path:
     sys.path.insert(0, _PTA_ROOT)
 
-from models.patch_level.base import (
-    _safe_normalize,
-    _extract_patch_embeddings,
-    _incremental_kmeans_step,
-    _gaussian_score_for_class,
-)
+from models.patch_level.kmeans import _incremental_kmeans_step, _gaussian_score_for_class
+from utils.clip_inference import _safe_normalize
 from utils import get_clip_logits, cls_acc
 
 

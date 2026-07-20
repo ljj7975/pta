@@ -176,7 +176,6 @@ def main():
         os.environ["DETAILCLIP_CHECKPOINT"] = args.clip_checkpoint
 
     encoder = create_encoder_instance(args.clip_model, **encoder_kwargs)
-    clip_model = encoder
     preprocess = encoder.preprocess
 
     # ------------------------------------------------------------------ adapter module
@@ -203,9 +202,9 @@ def main():
         test_loader, classnames, template = build_test_data_loader(
             dataset_name, args.data_root, preprocess, shuffle=True
         )
-        clip_weights = clip_classifier(classnames, template, clip_model)
+        text_embeddings = clip_classifier(classnames, template, encoder)
 
-        acc = adapter.run(test_loader, clip_model, clip_weights, dataset_name)
+        acc = adapter.run(test_loader, encoder, text_embeddings, dataset_name)
 
         print(f"\n  >> [{args.method.upper()}] {dataset_name}: {acc:.2f}%\n")
 

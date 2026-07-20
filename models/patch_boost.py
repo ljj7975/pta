@@ -30,7 +30,8 @@ from tqdm import tqdm
 from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.patch_level import create as create_patch_level
-from models.patch_level.base import _alpha_from_evidence, _safe_normalize
+from models.patch_level.base import _alpha_from_evidence
+from utils.clip_inference import _safe_normalize
 from models.fusion import WeightedFusion
 from utils import cls_acc, get_clip_logits
 
@@ -84,15 +85,15 @@ class PatchBoostAdapter(BaseAdapter):
     def run(
         self,
         loader,
-        clip_model,
-        clip_weights,
+        encoder,
+        text_embeddings,
         dataset_name: str,
     ) -> float:
-        if not hasattr(clip_model.visual, "positional_embedding") and not hasattr(clip_model.visual, "pos_embed"):
+        if not hasattr(encoder.visual, "positional_embedding") and not hasattr(encoder.visual, "pos_embed"):
             raise ValueError(
                 "PatchBoost requires a ViT backbone (ViT-B/16) "
                 "for patch extraction. "
-                f"Got: {type(clip_model.visual).__name__}"
+                f"Got: {type(encoder.visual).__name__}"
             )
 
         # ── Config ──────────────────────────────────────────────────
@@ -109,12 +110,12 @@ class PatchBoostAdapter(BaseAdapter):
 
         os.makedirs("outputs", exist_ok=True)
 
-        text_proto = _safe_normalize(clip_weights.t().float())  # [C, D]
+        text_proto = _safe_normalize(text_embeddings.t().float())  # [C, D]
         C, D       = text_proto.shape
         device     = text_proto.device
 
         # ── Dual prototype systems ──────────────────────────────────
-        refine_feature   = clip_weights.t().float()   # [C, D]
+        refine_feature   = text_embeddings.t().float()   # [C, D]
         target_prototype = self.image_level.init_state(refine_feature)
         states = self.patch_level.init_state(refine_feature)
 
@@ -138,7 +139,7 @@ class PatchBoostAdapter(BaseAdapter):
 
                 # 1) CLIP forward
                 image_features, clip_logits, _, _, _ = get_clip_logits(
-                    images, clip_model, clip_weights
+                    images, encoder, text_embeddings
                 )
                 feat      = image_features.squeeze(0).float()
                 feat_norm = _safe_normalize(feat)
@@ -146,7 +147,7 @@ class PatchBoostAdapter(BaseAdapter):
                 # 2) Patch-level Gaussian prototype scores + quality gate
                 #    quality_gate is computed but DISCARDED in fusion
                 patch_proto_logits, quality_gate = (
-                    self.patch_level.compute_patch_logits(images, clip_model, states)
+                    self.patch_level.compute_patch_logits(images, encoder, states)
                 )
 
                 # 3) Adaptive evidence weighting (computed for logging only)
@@ -199,8 +200,7 @@ class PatchBoostAdapter(BaseAdapter):
 
                 if best_conf > conf_thresh and conf_margin >= conf_margin_thresh:
                     states[best_cls] = self.patch_level.update_state(
-                        states[best_cls], images, clip_model, feat_norm,
-                        is_high_confidence=True,
+                        states[best_cls], images, encoder, feat_norm,
                     )
 
                 if i % 500 == 0:
@@ -257,9 +257,9 @@ class PatchBoostAdapter(BaseAdapter):
 
         return refined_text, target_prototype
 
-    def refine_with(self, clip_model, clip_weights, data_loader, dataset_name):
+    def refine_with(self, encoder, text_embeddings, data_loader, dataset_name):
         """Convenience alias for run()."""
-        return self.run(data_loader, clip_model, clip_weights, dataset_name)
+        return self.run(data_loader, encoder, text_embeddings, dataset_name)
 
 
 def build(cfg: dict) -> PatchBoostAdapter:

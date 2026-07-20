@@ -13,7 +13,7 @@ class ZeroShotAdapter:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def run(self, loader, clip_model, clip_weights, dataset_name: str) -> float:
+    def run(self, loader, encoder, text_embeddings, dataset_name: str) -> float:
         os.makedirs("outputs", exist_ok=True)
 
         max_batches = os.environ.get("MAX_BATCHES")
@@ -30,7 +30,7 @@ class ZeroShotAdapter:
                     break
 
                 _, clip_logits, _, _, _ = get_clip_logits(
-                    images, clip_model, clip_weights
+                    images, encoder, text_embeddings
                 )
                 target = target.cuda()
                 acc = cls_acc(clip_logits, target)

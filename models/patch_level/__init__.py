@@ -1,13 +1,7 @@
-from models.patch_level.base import (
-    BasePatchLevel,
-    _safe_normalize,
-    _extract_patch_embeddings,
-    _extract_all_tokens,
-    _incremental_kmeans_step,
-    _alpha_from_evidence,
-    _gaussian_score_for_class,
-)
+from models.patch_level.base import BasePatchLevel, _alpha_from_evidence
 from models.patch_level.gaussian_patch import GaussianPatchLevel, build
+from models.patch_level.kmeans import _incremental_kmeans_step, _gaussian_score_for_class
+from utils.clip_inference import _safe_normalize
 
 
 def create(cfg: dict) -> BasePatchLevel:
@@ -27,8 +21,6 @@ __all__ = [
     "build",
     "create",
     "_safe_normalize",
-    "_extract_patch_embeddings",
-    "_extract_all_tokens",
     "_incremental_kmeans_step",
     "_alpha_from_evidence",
     "_gaussian_score_for_class",

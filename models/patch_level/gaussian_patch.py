@@ -11,14 +11,17 @@ import torch
 import torchvision.transforms.functional as TF
 import clip as _clip  # local vendored CLIP — for tokenize()
 
-from models.patch_level.base import (
-    BasePatchLevel,
-    _safe_normalize,
-    _extract_patch_embeddings,
-    _extract_all_tokens,
+from typing import Optional
+
+from models.patch_level.base import BasePatchLevel
+from models.patch_level.kmeans import (
     _incremental_kmeans_step,
     _gaussian_score_for_class,
-    identify_relevant_patches,
+)
+from utils.clip_inference import (
+    _safe_normalize,
+    compute_surgery_scores,
+    filter_patches_by_text_alignment,
 )
 
 
@@ -137,66 +140,40 @@ class GaussianPatchLevel(BasePatchLevel):
         
         self._filter_mode = self._cfg.get("patch_filter_mode", "none")
         self._filter_top_k_ratio = float(self._cfg.get("patch_filter_top_k_ratio", 0.5))
+        self._filter_absolute_threshold = self._cfg.get("patch_filter_absolute_threshold", None)
+        if self._filter_absolute_threshold is not None:
+            self._filter_absolute_threshold = float(self._filter_absolute_threshold)
 
-    def _filter_patches_by_text_alignment(self, patches_norm, target_class_idx,
-                                           all_tokens=None, precomputed_scores=None):
-        """Compute per-patch text-alignment scores and return a boolean keep-mask.
-        
+    def precompute_filter_scores(
+        self,
+        images: torch.Tensor,
+        encoder,
+    ) -> Optional[torch.Tensor]:
+        """Compute surgery relevance scores for all patches and classes.
+
+        Intended to be called **once per image** in the adapter loop before
+        ``update_state``, so the surgery forward pass is shared across all
+        class updates for that image.
+
         Args:
-            patches_norm: [P, D] L2-normalised patch embeddings
-            target_class_idx: int, index of the target class
-            all_tokens: [B, 1+P, D] all vision tokens (CLS + patches), needed for surgery modes
-            precomputed_scores: [P] tensor of pre-computed similarity scores (surgery modes only)
-        
-        Returns:
-            mask: [P] bool tensor, True for patches to keep
-        """
-        P = patches_norm.shape[0]
-        
-        if not hasattr(self, "_text_features") or self._filter_mode == "none":
-            return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
-        
-        top_k = max(1, int(P * self._filter_top_k_ratio))
-        
-        # --- Precomputed scores fast-path (surgery modes from adapter) ---
-        if precomputed_scores is not None and self._filter_mode in ("surgery_with_labels", "surgery_no_labels"):
-            scores = precomputed_scores.float()  # [P_original]
-            n_views = 1 + int(self._cfg.get("aug_copies", 0))
-            if scores.shape[0] < patches_norm.shape[0]:
-                scores = scores.repeat(n_views)[:patches_norm.shape[0]]
-        # --- Mode: cosine_with_labels ---
-        elif self._filter_mode == "cosine_with_labels":
-            # Relative specificity: target score minus mean-other-class score
-            sim = patches_norm @ self._text_features.T  # [P, C]
-            target_score = sim[:, target_class_idx]  # [P]
-            other_mean = (sim.sum(1) - target_score) / max(sim.shape[1] - 1, 1)  # [P]
-            scores = target_score - other_mean  # [P]
-        # --- Mode: cosine_no_labels ---
-        elif self._filter_mode == "cosine_no_labels":
-            target_feat = self._text_features[target_class_idx]  # [D]
-            adjusted = target_feat - self._empty_text_feat.squeeze(0)  # [D]
-            adjusted = adjusted / adjusted.norm().clamp(min=1e-8)
-            scores = patches_norm @ adjusted  # [P]
-        # --- Mode: surgery_with_labels (fallback — no precomputed) ---
-        elif self._filter_mode == "surgery_with_labels":
-            from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
-            sim = clip_feature_surgery(all_tokens.float(), self._text_features.float())  # [B, 1+P, C]
-            scores = sim[0, 1:, target_class_idx]  # [P] — skip CLS token (index 0)
-        # --- Mode: surgery_no_labels (fallback — no precomputed) ---
-        elif self._filter_mode == "surgery_no_labels":
-            from third_party.CLIP_Surgery.clip_surgery.clip import clip_feature_surgery
-            target_feat = self._text_features[target_class_idx].unsqueeze(0)  # [1, D]
-            sim = clip_feature_surgery(all_tokens.float(), target_feat.float(),
-                                       redundant_feats=self._empty_text_feat.float())  # [B, 1+P, 1]
-            scores = sim[0, 1:, 0]  # [P]
-        else:
-            # Unknown mode — return all patches (safe fallback)
-            return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
-        
-        # Use utility function to identify relevant patches from heatmap
-        return identify_relevant_patches(scores, top_k_ratio=self._filter_top_k_ratio, min_patches=1)
+            images:  ``[1, C_img, H, W]`` input image tensor.
+            encoder: encoder wrapper (provides encode_image for surgery pass).
 
-    def compute_patch_logits(self, images, clip_model, states):
+        Returns:
+            ``[P, C]`` tensor of scores, or ``None`` if the configured
+            ``patch_filter_mode`` is not a surgery mode or if text context
+            has not yet been set via :meth:`set_text_context`.
+        """
+        if not hasattr(self, "_text_features"):
+            return None
+        return compute_surgery_scores(
+            images, encoder,
+            self._text_features,
+            self._empty_text_feat,
+            self._filter_mode,
+        )
+
+    def compute_patch_logits(self, images, encoder, states):
         # ── Config ────────────────────────────────────────────────────────────
         exclude_pos = bool(self._cfg.get("exclude_pos", False))
         top_m = int(self._cfg.get("soft_nn_top_m", 4))
@@ -209,7 +186,7 @@ class GaussianPatchLevel(BasePatchLevel):
         device = states[0]["centers"].device if num_classes > 0 else images.device
 
         # ── Extract patch embeddings ─────────────────────────────────────────
-        patch_embs = _extract_patch_embeddings(images, clip_model, exclude_pos=exclude_pos)
+        patch_embs = encoder.get_patch_embeddings(images, exclude_pos=exclude_pos)  # extract patch embeddings
         patches_norm = _safe_normalize(patch_embs)  # [P, D]
 
         # ── Compute per-class Gaussian score ──────────────────────────────────
@@ -235,11 +212,8 @@ class GaussianPatchLevel(BasePatchLevel):
 
         return raw_proto, quality_gate
 
-    def update_state(self, state, images, clip_model, global_feat, is_high_confidence,
+    def update_state(self, state, images, encoder, global_feat,
                      *, filter_scores=None, target_class_idx=None):
-        if not is_high_confidence:
-            return state
-
         # ── Config ────────────────────────────────────────────────────────────
         match_threshold = float(self._cfg.get("match_threshold", 0.60))
         max_K = int(self._cfg.get("max_K", 100))
@@ -251,18 +225,15 @@ class GaussianPatchLevel(BasePatchLevel):
 
         aug_copies = int(self._cfg.get("aug_copies", 0))
 
-        # ── Extract patches ──────────────────────────────────────────────────
-        patch_embs = _extract_patch_embeddings(images, clip_model, exclude_pos=exclude_pos)
-        patches_norm = _safe_normalize(patch_embs)  # [P, D]
-
-        # ── Augmented views (concatenate first, then filter all) ──────────────
-        if aug_copies > 0:
-            aug_patch_list = [patches_norm]  # original view (unfiltered)
-            for _ in range(aug_copies):
-                aug_img = _augment_image(images)
-                aug_embs = _extract_patch_embeddings(aug_img, clip_model, exclude_pos=exclude_pos)
-                aug_patch_list.append(_safe_normalize(aug_embs))  # augmented views
-            patches_norm = torch.cat(aug_patch_list, dim=0)  # [(1+aug_copies)*P, D]
+        # ── Build all views (original + augmented), then batch extract ────────
+        all_views = [images]
+        for _ in range(aug_copies):
+            all_views.append(_augment_image(images))
+        batched_images = torch.cat(all_views, dim=0)  # [(1+aug_copies), C, H, W]
+        patch_embs = encoder.get_patch_embeddings(batched_images, exclude_pos=exclude_pos)  # [B, P, D]
+        # Flatten to [(1+aug_copies)*P, D] — squeeze(0) in get_patch_embeddings only works for B=1
+        patch_embs = patch_embs.reshape(-1, patch_embs.shape[-1])
+        patches_norm = _safe_normalize(patch_embs)  # [(1+aug_copies)*P, D]
 
         # ── Patch relevance filtering (on full concatenated pool) ──────────────
         filter_mode = self._cfg.get("patch_filter_mode", "none")
@@ -270,17 +241,26 @@ class GaussianPatchLevel(BasePatchLevel):
         if (filter_mode != "none"
                 and hasattr(self, "_text_features")
                 and target_class_idx is not None):
-            # For surgery modes without precomputed scores, extract all tokens
-            all_tokens_for_filter = None
-            if filter_mode in ("surgery_with_labels", "surgery_no_labels") and filter_scores is None:
-                from models.patch_level.base import _extract_all_tokens
-                all_tokens_for_filter = _extract_all_tokens(images, clip_model)
-            keep_mask = self._filter_patches_by_text_alignment(
+            # Surgery modes: compute scores on every view (original + augmented)
+            # so the filter reflects foreground evidence from the full patch pool.
+            if filter_scores is None and filter_mode in ("surgery_with_labels", "surgery_no_labels"):
+                filter_scores = torch.cat([
+                    compute_surgery_scores(
+                        img, encoder, self._text_features, self._empty_text_feat, filter_mode
+                    )[:, target_class_idx]
+                    for img in all_views
+                ])  # [(1+aug_copies)*P]
+            keep_mask = filter_patches_by_text_alignment(
                 patches_norm, target_class_idx,
-                all_tokens=all_tokens_for_filter,
+                text_features=self._text_features,
+                empty_text_feat=self._empty_text_feat,
+                filter_mode=filter_mode,
+                filter_top_k_ratio=self._filter_top_k_ratio,
+                filter_absolute_threshold=self._filter_absolute_threshold,
+                aug_copies=aug_copies,
                 precomputed_scores=filter_scores,
             )
-            patches_norm = patches_norm[keep_mask]  # [P_filtered, D] where P_filtered ≈ (1+aug_copies)*P/2
+            patches_norm = patches_norm[keep_mask]  # [P_filtered, D]
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]
