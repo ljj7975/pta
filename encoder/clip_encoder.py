@@ -5,6 +5,10 @@ class CLIPSurgeryEncoder(Encoder):
     CLIP Surgery Encoder that loads a CLIP Surgery model for text and image encoding.
     """
 
+    # CS-ViT-B/16 surgery-modified attention produces locally discriminative patch
+    # tokens where cosine similarity with text points in the correct direction.
+    is_surgery_encoder = True
+
     def __init__(self, model_type='ViT-B/32', device='cpu'):
         if not hasattr(self, "initialized"):  # Only initialize once
             super().__init__(model_type, device)
@@ -53,6 +57,11 @@ class CLIPEncoder(CLIPSurgeryEncoder):
     Loads a vanilla OpenAI CLIP model via the CLIP Surgery library's loader
     (which supports both regular CLIP and CLIP Surgery checkpoints).
     """
+
+    # Standard CLIP bidirectional attention causes patch tokens to absorb global
+    # context, making cosine similarity with text inverted relative to CS-ViT.
+    # Downstream scoring functions check this flag and negate accordingly.
+    is_surgery_encoder = False
 
     def __init__(self, model_type='ViT-B/16', device='cpu'):
         if not hasattr(self, "initialized"):

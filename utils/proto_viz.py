@@ -83,7 +83,7 @@ _PTA_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PTA_ROOT not in sys.path:
     sys.path.insert(0, _PTA_ROOT)
 
-from models.patch_level.kmeans import _incremental_kmeans_step, _gaussian_score_for_class
+from utils.kmeans import _incremental_kmeans_step, _gaussian_score_for_class
 from utils.clip_inference import _safe_normalize
 from utils import get_clip_logits, cls_acc
 
@@ -558,7 +558,7 @@ class ProtoVizEngine:
             )
 
             updated_apps = apps.clone()
-            updated_apps[appeared] += 1
+            updated_apps[appeared >= 1] += 1
             n_new = updated_centers.shape[0] - old_K
             if n_new > 0:
                 updated_apps = torch.cat([updated_apps, torch.ones(n_new, device=self.device)], dim=0)

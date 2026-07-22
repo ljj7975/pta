@@ -159,8 +159,9 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         # ── Config ──────────────────────────────────────────────────
         max_K              = int(self.cfg.get("max_K", 100))
         match_thresh       = float(self.cfg.get("match_threshold", 0.60))
-        conf_thresh        = float(self.cfg.get("conf_threshold", 0.5))
-        conf_margin_thresh = float(self.cfg.get("conf_margin_threshold", 0.05))
+        _pl_cfg            = self.cfg.get("patch_level", {})
+        conf_thresh        = float(_pl_cfg.get("conf_threshold", self.cfg.get("conf_threshold", 0.5)))
+        conf_margin_thresh = float(_pl_cfg.get("conf_margin_threshold", self.cfg.get("conf_margin_threshold", 0.05)))
         n_half             = float(self.cfg.get("n_half", 15.0))
         alpha_max          = float(self.cfg.get("proto_alpha_max", 0.2))
         conf_source        = str(self.cfg.get("conf_source", "text"))
@@ -260,7 +261,6 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     image_features.half() @ refine_feature.half().T
                 )  # [1, C]
 
-                # 6) Three-way fusion with quality-gated patch modulation
                 final_logits = self.fusion.forward(
                     clip_logits,
                     image_proto_logits,
@@ -269,7 +269,6 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     proto_alpha=proto_alpha,
                 )
 
-                # Determine which logits to use for the confidence gate
                 if conf_source == "text":
                     gate_logits = clip_logits
                 elif conf_source == "image":
@@ -284,11 +283,9 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
-                # 7) Online memory update (patch-level)
                 pred_conf = F.softmax(gate_logits, dim=-1).squeeze(0)
 
                 if multi_gate:
-                    # Multi-gate: update ALL classes above conf_thresh
                     above_thresh = (pred_conf > conf_thresh).nonzero(as_tuple=True)[0]
                     for cls_idx in above_thresh:
                         cls = int(cls_idx.item())
@@ -297,7 +294,6 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                             target_class_idx=cls,
                         )
                 else:
-                    # Default: binary top-1 gate (existing behavior)
                     top2_vals, top2_idx = pred_conf.topk(min(2, C))
                     best_conf   = float(top2_vals[0].item())
                     second_conf = float(top2_vals[1].item()) if C > 1 else 0.0

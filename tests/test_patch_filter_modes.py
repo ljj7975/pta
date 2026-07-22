@@ -45,7 +45,7 @@ def create_test_config(filter_mode="none"):
             "variance_max": 1.0,
             "aug_copies": 15,
             "patch_filter_mode": filter_mode,
-            "patch_filter_top_k_ratio": 0.5,
+            "patch_filter_threshold": 0.5,
         }
     }
 
@@ -120,7 +120,7 @@ def test_filter_modes_differ():
             text_features=patch_level._text_features,
             empty_text_feat=patch_level._empty_text_feat,
             filter_mode=mode,
-            filter_top_k_ratio=patch_level._filter_top_k_ratio,
+            filter_threshold=patch_level._filter_threshold,
             aug_copies=15,
             precomputed_scores=filter_scores,
         )

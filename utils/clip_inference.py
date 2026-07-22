@@ -15,8 +15,7 @@ def _safe_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.
 
 def identify_relevant_patches(
     heatmap: torch.Tensor,
-    top_k_ratio: float = 0.5,
-    absolute_threshold: Optional[float] = None,
+    threshold: float = 0.5,
     min_patches: int = 1,
 ) -> torch.Tensor:
     """
@@ -25,20 +24,11 @@ def identify_relevant_patches(
     Takes a heatmap of similarity scores (one score per patch), applies min-max
     normalization to [0, 1], and returns a boolean mask.
 
-    Two thresholding strategies (use one):
-    - **top_k_ratio**: keeps the top *ratio* fraction of patches (relative).
-    - **absolute_threshold**: keeps patches whose normalised score >= threshold
-      (absolute). The number of kept patches is dynamic.
-
     Args:
         heatmap: [P] tensor of similarity scores (higher = more relevant).
                  Can be any scale (cosine similarity, surgery scores, etc.).
-        top_k_ratio: Fraction of patches to keep (0.0 to 1.0). Ignored if
-                     *absolute_threshold* is set.
-        absolute_threshold: Absolute threshold on the **normalised** [0, 1]
-                            score. Patches with normalised score >= this value
-                            are kept. Set to ``None`` (default) to use
-                            *top_k_ratio* instead.
+        threshold: Absolute threshold on the **normalised** [0, 1] score.
+                   Patches with normalised score >= this value are kept.
         min_patches: Minimum number of patches to always keep (default: 1).
                      Ensures at least this many patches survive filtering.
 
@@ -47,10 +37,7 @@ def identify_relevant_patches(
 
     Example:
         >>> scores = torch.tensor([0.1, 0.5, 0.3, 0.9, 0.2])  # 5 patches
-        >>> mask = identify_relevant_patches(scores, top_k_ratio=0.6)
-        >>> mask
-        tensor([False,  True,  True,  True, False])  # top 3 (60%) kept
-        >>> mask = identify_relevant_patches(scores, absolute_threshold=0.7)
+        >>> mask = identify_relevant_patches(scores, threshold=0.7)
         >>> mask
         tensor([False,  True, False,  True, False])  # 2 patches above threshold
     """
@@ -64,15 +51,8 @@ def identify_relevant_patches(
         # Degenerate case: all scores identical → keep all
         return torch.ones(P, dtype=torch.bool, device=heatmap.device)
 
-    if absolute_threshold is not None:
-        # Absolute threshold on normalised scores
-        mask = scores_norm >= absolute_threshold
-    else:
-        # Top-k ratio (relative)
-        top_k = max(min_patches, int(P * top_k_ratio))
-        topk_vals, _ = scores_norm.topk(top_k)
-        threshold = topk_vals[-1]
-        mask = scores_norm >= threshold
+    # Absolute threshold on normalised scores
+    mask = scores_norm >= threshold
 
     # Safety: always keep at least min_patches (the highest scoring one)
     mask[scores_norm.argmax()] = True
@@ -199,7 +179,13 @@ def compute_surgery_scores(
             redundant_feats=empty_text_feat.float(),
         )  # [1, 1+P, C]
 
-    return scores[0, 1:]  # [P, C] — strip CLS token and batch dim
+    scores_out = scores[0, 1:]  # [P, C] — strip CLS token and batch dim
+    # Standard CLIP (non-surgery) patch features produce inverted scores when passed
+    # through clip_feature_surgery, which is designed for CS-ViT-B/16 features.
+    # Negating corrects the direction so higher scores always mean more class-relevant.
+    if not getattr(encoder, 'is_surgery_encoder', True):
+        scores_out = -scores_out
+    return scores_out
 
 
 def filter_patches_by_text_alignment(
@@ -209,10 +195,11 @@ def filter_patches_by_text_alignment(
     text_features: Optional[torch.Tensor] = None,
     empty_text_feat: Optional[torch.Tensor] = None,
     filter_mode: str = "none",
-    filter_top_k_ratio: float = 0.5,
-    filter_absolute_threshold: Optional[float] = None,
+    filter_threshold: float = 0.5,
     aug_copies: int = 0,
     precomputed_scores: Optional[torch.Tensor] = None,
+    encoder: object = None,
+    return_scores: bool = False,
 ) -> torch.Tensor:
     """Compute per-patch text-alignment scores and return a boolean keep-mask.
 
@@ -229,27 +216,35 @@ def filter_patches_by_text_alignment(
         empty_text_feat:     ``[1, D]`` L2-normalised empty-string embedding (required for cosine_no_labels).
         filter_mode:         One of ``"none"``, ``"cosine_with_labels"``, ``"cosine_no_labels"``,
                              ``"surgery_with_labels"``, ``"surgery_no_labels"``.
-        filter_top_k_ratio:  Fraction of patches to keep (passed to ``identify_relevant_patches``).
-                             Ignored if *filter_absolute_threshold* is set.
-        filter_absolute_threshold: Absolute threshold on the **normalised** [0, 1]
-                                   score. Patches with normalised score >= this value
-                                   are kept. Set to ``None`` (default) to use
-                                   *filter_top_k_ratio* instead.
+        filter_threshold:    Absolute threshold on the **normalised** [0, 1] score.
+                             Patches with normalised score >= this value are kept.
         aug_copies:          Number of augmented views concatenated with the original.
                              Used to repeat surgery scores across views when precomputed.
-        precomputed_scores:  ``[P]`` per-patch surgery scores for *target_class_idx* (optional);
-                             required for surgery modes.
+        precomputed_scores:  ``[P]`` per-patch scores for *target_class_idx* (optional);
+                             bypasses internal score computation for any mode.
+        encoder:             Optional encoder object. If ``encoder.is_surgery_encoder``
+                             is False (standard CLIP), patches are negated before cosine
+                             scoring to correct the inverted similarity direction.
+        return_scores:       If True, return ``(mask, scores)`` tuple instead of just ``mask``.
 
     Returns:
         mask: ``[P]`` bool tensor, True for patches to keep.
+        scores: ``[P]`` float tensor of raw scores (only when *return_scores* is True).
     """
     P = patches_norm.shape[0]
 
     if text_features is None or filter_mode == "none":
-        return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        mask = torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        return (mask, None) if return_scores else mask
 
-    # --- Precomputed scores fast-path (surgery modes) ---
-    if precomputed_scores is not None and filter_mode in ("surgery_with_labels", "surgery_no_labels"):
+    # Standard CLIP patch cosine similarity is inverted relative to CS-ViT features.
+    # Negate patches_norm so cosine scores point in the correct direction.
+    # Only applied when precomputed_scores is absent (cosine path would be used).
+    if encoder is not None and not getattr(encoder, 'is_surgery_encoder', True) and precomputed_scores is None:
+        patches_norm = -patches_norm
+
+    # --- Precomputed scores fast-path (any mode) ---
+    if precomputed_scores is not None:
         scores = precomputed_scores.float()  # [P_original]
         n_views = 1 + aug_copies
         if scores.shape[0] < patches_norm.shape[0]:
@@ -268,15 +263,18 @@ def filter_patches_by_text_alignment(
         scores = patches_norm @ adjusted  # [P]
     else:
         # Unknown mode — return all patches (safe fallback)
-        return torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        mask = torch.ones(P, dtype=torch.bool, device=patches_norm.device)
+        return (mask, None) if return_scores else mask
 
-    # Negate scores: raw scores are "distance-like" (lower = more object-relevant),
-    # so we invert them so that higher = more relevant for top-k/threshold filtering.
-    scores = -scores
+    # Scores are similarity-like for ALL modes (higher = more relevant):
+    # - cosine_with_labels: target_score - other_mean (higher = more target-specific)
+    # - cosine_no_labels: patches @ adjusted_text (higher = more aligned with target)
+    # - surgery modes: clip_feature_surgery output (higher = more class-specific)
+    # No negation needed — identify_relevant_patches expects higher = more relevant.
 
-    return identify_relevant_patches(
+    mask = identify_relevant_patches(
         scores,
-        top_k_ratio=filter_top_k_ratio,
-        absolute_threshold=filter_absolute_threshold,
+        threshold=filter_threshold,
         min_patches=1,
     )
+    return (mask, scores) if return_scores else mask

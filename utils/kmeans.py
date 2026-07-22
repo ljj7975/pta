@@ -33,8 +33,8 @@ def _incremental_kmeans_step(
 
     Returns:
         updated_centers: [K', D]  all prototypes after update (K' >= K, up to max_clusters)
-        appeared:        [K] bool  which OLD prototypes were matched by at least 1 patch
-                         (used for per-sample appearance counting, not per-patch)
+        appeared:        [K] long  number of patches that matched each OLD prototype
+                         (used for per-sample appearance counting with patch-count threshold)
         matched:         [P] bool  which input patches matched an old prototype
         best_clusters:   [P] int   which old prototype each patch matched (meaningful only where matched=True)
         new_groups:      list of index tensors, one per new prototype created
@@ -48,7 +48,7 @@ def _incremental_kmeans_step(
     # When K=0 there are no existing prototypes to compare against, so every
     # patch is unmatched and the similarity / EMA steps are skipped entirely.
     if K == 0:
-        appeared      = torch.zeros(0, dtype=torch.bool, device=cluster_centers.device)
+        appeared      = torch.zeros(0, dtype=torch.long, device=cluster_centers.device)
         matched       = torch.zeros(new_patches.shape[0], dtype=torch.bool, device=cluster_centers.device)
         best_clusters = torch.zeros(new_patches.shape[0], dtype=torch.long, device=cluster_centers.device)
         updated_centers = cluster_centers.clone()
@@ -75,14 +75,14 @@ def _incremental_kmeans_step(
     matched = best_sims >= match_threshold                   # [P] bool: does this patch fit any prototype?
 
     # Track which prototypes were visited by at least one patch this image
-    appeared = torch.zeros(K, dtype=torch.bool, device=cluster_centers.device)  # [K]
+    appeared = torch.zeros(K, dtype=torch.long, device=cluster_centers.device)  # [K]
     updated_centers = centers_norm.clone()                   # start from current prototypes
 
     # Update matched prototypes: nudge center slightly toward the incoming patches
     for k in range(K):
         mask = matched & (best_clusters == k)  # which patches matched prototype k
         if mask.any():
-            appeared[k] = True
+            appeared[k] += 1
             mean_patch = patches_norm[mask].mean(dim=0)  # average of all matching patches
             # EMA: new_prototype = 90% old + 10% new_mean  (small step toward new data)
             updated_centers[k] = _safe_normalize(
@@ -124,6 +124,7 @@ def _gaussian_score_for_class(
     patch_group_threshold: float = 0.9,
     variance_min: float = 0.001,
     aggregation: str = "top_m_mean",
+    return_details: bool = False,
 ) -> torch.Tensor:
     """
     Score one class using Gaussian prototype similarity.
@@ -167,13 +168,41 @@ def _gaussian_score_for_class(
 
     rep_patches = torch.stack(rep_centers, dim=0)  # [G, D]
 
+    # DEBUG: trace patch grouping
+    if return_details:
+        print(f"    [DEBUG _gaussian_score_for_class] num_groups={len(group_members)}  K={K}")
+        for gi, members in enumerate(group_members):
+            print(f"      group {gi}: {len(members)} patches (indices: {members.cpu().numpy().tolist()[:10]}{'...' if len(members) > 10 else ''})")
+
     # ── Gaussian score between each patch group and each prototype ─────────
     # diff[g, k, d] = rep_patches[g, d] - centers_norm[k, d]
     # gaussian_score[g, k] = exp(-0.5 * Σ_d diff² / variance_k_d)
-    var_clamped = variance.clamp(min=variance_min)  # [K, D]
+    #
+    # The Mahalanobis distance sums over all D dimensions. With D=512 (ViT-B/16),
+    # a per-dimension variance floor of 0.001 produces total distances of 200–1000,
+    # causing exp(-0.5 * maha) to underflow to exactly 0.0 in float32.
+    #
+    # Fix: scale the effective variance floor by D so that the total Mahalanobis
+    # distance stays in a numerically stable range (~1–20 instead of ~200–1000).
+    # The stored variance values are unchanged; this only affects the scoring floor.
+    D = variance.shape[-1]
+    effective_var_min = variance_min * D  # e.g. 0.001 * 512 ≈ 0.512
+    var_clamped = variance.clamp(min=effective_var_min)  # [K, D]
     diff = rep_patches[:, None, :] - centers_norm[None, :, :]  # [G, K, D]
     scaled_maha = (diff.pow(2) / var_clamped[None, :, :]).sum(dim=-1)  # [G, K]
     gaussian_scores = torch.exp(-0.5 * scaled_maha)  # [G, K]
+
+    # DEBUG: trace gaussian_scores matrix
+    if return_details:
+        gs = gaussian_scores.cpu().numpy()
+        print(f"    [DEBUG _gaussian_score_for_class] gaussian_scores [{gs.shape[0]}x{gs.shape[1]}]:")
+        print(f"      min={gs.min():.6f}  max={gs.max():.6f}  mean={gs.mean():.6f}")
+        print(f"      scaled_maha (pre-exp): min={scaled_maha.cpu().numpy().min():.4f}  "
+              f"max={scaled_maha.cpu().numpy().max():.4f}  mean={scaled_maha.cpu().numpy().mean():.4f}")
+        # Print the matrix as a compact table
+        for gi in range(gs.shape[0]):
+            row_str = ", ".join(f"{v:.4f}" for v in gs[gi])
+            print(f"      group {gi}: [{row_str}]")
 
     # ── One-to-one assignment (same as MPTA) ───────────────────────────────
     num_groups, K = gaussian_scores.shape
@@ -187,31 +216,49 @@ def _gaussian_score_for_class(
         scores[used_groups] = float("-inf")
         best_val, group_idx = scores.max(dim=0)
         if torch.isneginf(best_val):
+            if return_details:
+                print(f"    [DEBUG assignment] proto {proto_idx}: no available group (all used or -inf), score=0")
             continue
         best_per_proto[proto_idx] = best_val
         used_groups[group_idx] = True
+        if return_details:
+            print(f"    [DEBUG assignment] proto {proto_idx} ← group {group_idx.item()}  score={best_val.item():.6f}")
 
     # ── Appearance weighting and top-M aggregation ─────────────────────────
     denom = max(float(update_samples), 1e-6)
     app_w = appearance / denom
     weighted = best_per_proto * app_w  # [K]
 
+    # DEBUG: trace final scores before aggregation
+    if return_details:
+        print(f"    [DEBUG _gaussian_score_for_class] best_per_proto: {best_per_proto.cpu().numpy().tolist()}")
+        print(f"    [DEBUG _gaussian_score_for_class] app_w: {app_w.cpu().numpy().tolist()}")
+        print(f"    [DEBUG _gaussian_score_for_class] weighted: {weighted.cpu().numpy().tolist()}")
+        print(f"    [DEBUG _gaussian_score_for_class] top_m={top_m}  aggregation={aggregation}")
+
     k = min(top_m, weighted.numel())
     if k <= 0:
         return torch.tensor(0.0, device=gaussian_scores.device)
 
-    # ── Aggregation strategy ────────────────────────────────────────────────
     if aggregation == "top_m_mean":
-        return weighted.topk(k).values.mean()
+        score = weighted.topk(k).values.mean()
     elif aggregation == "max":
-        return weighted.max()
+        score = weighted.max()
     elif aggregation == "sum":
-        return weighted.sum()
+        score = weighted.sum()
     elif aggregation == "mean":
-        return weighted.mean()
+        score = weighted.mean()
     elif aggregation == "top_m_mean_plus_mean":
         top_m_val = weighted.topk(k).values.mean()
         all_mean = weighted.mean()
-        return (top_m_val + all_mean) / 2.0
+        score = (top_m_val + all_mean) / 2.0
     else:
-        return weighted.topk(k).values.mean()
+        score = weighted.topk(k).values.mean()
+
+    if return_details:
+        return score, {
+            "best_per_proto": best_per_proto,   # [K] Gaussian score per prototype (before weighting)
+            "weighted": weighted,               # [K] after appearance weighting
+            "app_w": app_w,                     # [K] appearance weights
+        }
+    return score

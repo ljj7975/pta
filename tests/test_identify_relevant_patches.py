@@ -49,16 +49,16 @@ from third_party.CLIP_Surgery.clip_surgery import clip as clip_surgery
 ASSETS_DIR = Path(__file__).parent / "assets"
 OUTPUT_DIR = ASSETS_DIR / "output"
 MODEL_TYPE = "ViT-B/16"
-TOP_K_RATIO = 0.5
-
 # Thresholds to compare — each row in the patch grid shows a different threshold
 THRESHOLDS = [0.2, 0.4, 0.6, 0.8]
 
-# Map each asset image to its ground-truth class label.
+# Map each asset image to its ground-truth class label(s).
+# "demo.jpg" comes from CLIP_Surgery/demo.ipynb which targets multiple classes.
 IMAGE_LABELS = {
     "cat.jpg": "cat",
     "person.jpg": "person",
     "bird.jpg": "bird",
+    "demo.jpg": ["bench", "building", "ground", "person"],  # multi-label from CLIP_Surgery demo
 }
 
 # All filter modes to test.
@@ -72,7 +72,8 @@ FILTER_MODES = [
 
 # Additional classes for cosine_with_labels (needed to compute "other" mean).
 # We include the ground-truth label plus a few distractors.
-ALL_CLASSES = ["cat", "person", "bird", "dog", "car", "tree", "house", "airplane"]
+# "bench", "building", "ground" are added for the demo.jpg multi-label case (CLIP_Surgery demo.ipynb).
+ALL_CLASSES = ["airplane", "bench", "bird", "building", "car", "cat", "dog", "ground", "house", "person", "tree"]
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +90,7 @@ def get_similarity_map(scores: torch.Tensor, shape: tuple, invert: bool = False)
     Args:
         scores: [B, P] per-patch relevance scores (higher = more relevant).
         shape: target (height, width) for bilinear interpolation.
-        invert: if True, negate scores before normalization so that
-                LOW original scores become HIGH in the heatmap.
-                Use when the raw scores are "distance-like" (lower = better match).
+        invert: if True, negate scores before normalization. Not used by default.
     """
     if invert:
         scores = -scores
@@ -137,46 +136,6 @@ def extract_foreground_patches(pil_img: Image.Image, mask: torch.Tensor,
         patch_pil = pil_img.crop((x1, y1, x2, y2))
         patches.append(patch_pil)
     return patches
-
-
-def compute_scores_for_mode(
-    patches_norm: torch.Tensor,
-    target_class_idx: int,
-    encoder: CLIPEncoder,
-    text_features: torch.Tensor,
-    empty_text_feat: torch.Tensor,
-    images_tensor: torch.Tensor,
-    filter_mode: str,
-) -> torch.Tensor:
-    """Compute per-patch scores for a given filter mode (without masking).
-
-    Returns [P] float tensor of raw scores.
-    """
-    if filter_mode == "none":
-        return torch.ones(patches_norm.shape[0], device=patches_norm.device)
-
-    if filter_mode in ("surgery_with_labels", "surgery_no_labels"):
-        all_tokens = encoder.encode_image(
-            images_tensor, CLS_token_only=False, preprocess=False
-        )  # [1, 1+P, D]
-        scores_2d = compute_surgery_scores(
-            images_tensor, encoder, text_features, empty_text_feat, filter_mode
-        )  # [P, C]
-        return scores_2d[:, target_class_idx]  # [P]
-
-    if filter_mode == "cosine_with_labels":
-        sim = patches_norm @ text_features.T  # [P, C]
-        target_score = sim[:, target_class_idx]
-        other_mean = (sim.sum(1) - target_score) / max(sim.shape[1] - 1, 1)
-        return target_score - other_mean
-
-    if filter_mode == "cosine_no_labels":
-        target_feat = text_features[target_class_idx]
-        adjusted = target_feat - empty_text_feat.squeeze(0)
-        adjusted = adjusted / adjusted.norm().clamp(min=1e-8)
-        return patches_norm @ adjusted
-
-    return torch.ones(patches_norm.shape[0], device=patches_norm.device)
 
 
 # ---------------------------------------------------------------------------
@@ -235,19 +194,17 @@ def test_filter_patches_by_text_alignment():
             print(f"  ⚠ Skipping {img_name} — file not found at {img_path}")
             continue
 
-        target_class_idx = ALL_CLASSES.index(label)
         img_stem = Path(img_name).stem  # "cat.jpg" → "cat"
-        print(f"\n{'─' * 60}")
-        print(f"Image: {img_name}  |  Label: {label}  |  Class idx: {target_class_idx}")
-        print(f"{'─' * 60}")
 
-        # Load and preprocess image
+        # Normalize label to list for uniform handling
+        target_labels = label if isinstance(label, list) else [label]
+
+        # Load and preprocess image ONCE per image (shared across all target labels)
         pil_img = Image.open(img_path).convert("RGB")
-        # Use encoder.preprocess (224x224 from clip_surgery) not preprocess_for_torch (448)
         img_tensor = encoder.preprocess(pil_img).unsqueeze(0).to(device)
         print(f"  Preprocessed tensor shape: {img_tensor.shape}")
 
-        # Extract patch embeddings
+        # Extract patch embeddings ONCE per image
         with torch.no_grad():
             all_tokens = encoder.encode_image(
                 img_tensor, CLS_token_only=False, preprocess=False
@@ -256,132 +213,148 @@ def test_filter_patches_by_text_alignment():
         patches_norm = _safe_normalize(patch_embs)
         print(f"  Patch embeddings: {patches_norm.shape}")
 
-        img_results = {}
-        heatmap_images = []   # list of (mode, overlay_np)
-        # patch_grids[mode][threshold] = (grid_np, kept_count)
-        patch_grids = {mode: {} for mode in FILTER_MODES}
-
         resized_img = pil_img.resize((input_res, input_res), Image.LANCZOS)
 
-        for mode in FILTER_MODES:
-            print(f"\n  Mode: {mode}")
+        # Process each target label separately
+        for target_label in target_labels:
+            target_class_idx = ALL_CLASSES.index(target_label)
+            print(f"\n{'─' * 60}")
+            print(f"Image: {img_name}  |  Label: {target_label}  |  Class idx: {target_class_idx}")
+            print(f"{'─' * 60}")
 
-            # Compute raw scores (for visualization)
-            scores = compute_scores_for_mode(
-                patches_norm, target_class_idx, encoder,
-                text_features, empty_text_feat, img_tensor, mode,
-            )  # [P]
+            img_results = {}
+            heatmap_images = []   # list of (mode, overlay_np)
+            # patch_grids[mode][threshold] = (grid_np, kept_count)
+            patch_grids = {mode: {} for mode in FILTER_MODES}
 
-            # --- Heatmap overlay ---
-            # Negate scores so object regions (low raw score) appear red (high).
-            if mode == "none":
-                overlay = np.array(pil_img.convert("RGB"))
-            else:
-                neg_scores = -scores  # invert: low raw → high heatmap value
-                scores_batch = neg_scores.unsqueeze(0)  # [1, P]
-                heatmap = get_similarity_map(scores_batch, pil_img.size[::-1])  # [1, H, W]
-                heatmap_np = heatmap[0].cpu().numpy()
-                overlay = render_heatmap_overlay(pil_img, heatmap_np)
-            heatmap_images.append((mode, overlay))
+            for mode in FILTER_MODES:
+                print(f"\n  Mode: {mode}")
 
-            # --- Compute masks + patch grids for each threshold ---
-            # The filter internally negates scores (raw scores are distance-like:
-            # lower = more object-relevant), so we pass raw scores as-is.
-            for thresh in THRESHOLDS:
-                keep_mask = filter_patches_by_text_alignment(
-                    patches_norm,
-                    target_class_idx=target_class_idx,
-                    text_features=text_features,
-                    empty_text_feat=empty_text_feat,
-                    filter_mode=mode,
-                    filter_top_k_ratio=TOP_K_RATIO,
-                    filter_absolute_threshold=thresh,
-                    precomputed_scores=scores if mode.startswith("surgery") else None,
-                )  # [P]
-
-                kept = int(keep_mask.sum())
-                fg_patches = extract_foreground_patches(
-                    resized_img, keep_mask, side, patch_size
-                )
-
-                if fg_patches:
-                    n_cols = min(len(fg_patches), 14)
-                    n_rows = math.ceil(len(fg_patches) / n_cols)
-                    grid_w = n_cols * patch_size
-                    grid_h = n_rows * patch_size
-                    grid_img = Image.new("RGB", (grid_w, grid_h), color=(0, 0, 0))
-                    for i, patch_pil in enumerate(fg_patches):
-                        col_idx = i % n_cols
-                        row_idx = i // n_cols
-                        patch_resized = patch_pil.resize((patch_size, patch_size), Image.LANCZOS)
-                        grid_img.paste(patch_resized, (col_idx * patch_size, row_idx * patch_size))
-                    patch_grids[mode][thresh] = (np.array(grid_img), kept)
+                # --- Get per-patch scores and heatmap ---
+                if mode == "none":
+                    mode_scores = None
+                    overlay = np.array(pil_img.convert("RGB"))
+                elif mode.startswith("surgery"):
+                    scores_2d = compute_surgery_scores(
+                        img_tensor, encoder, text_features, empty_text_feat, mode
+                    )  # [P, C]
+                    mode_scores = scores_2d[:, target_class_idx]  # [P]
+                    heatmap = get_similarity_map(mode_scores.unsqueeze(0), pil_img.size[::-1])
+                    overlay = render_heatmap_overlay(pil_img, heatmap[0].cpu().numpy())
                 else:
-                    patch_grids[mode][thresh] = (None, 0)
+                    _, mode_scores = filter_patches_by_text_alignment(
+                        patches_norm,
+                        target_class_idx=target_class_idx,
+                        text_features=text_features,
+                        empty_text_feat=empty_text_feat,
+                        filter_mode=mode,
+                        encoder=encoder,
+                        return_scores=True,
+                    )
+                    heatmap = get_similarity_map(mode_scores.unsqueeze(0), pil_img.size[::-1])
+                    overlay = render_heatmap_overlay(pil_img, heatmap[0].cpu().numpy())
+                heatmap_images.append((mode, overlay))
 
-            # Store stats for the "default" threshold (middle one)
-            default_thresh = THRESHOLDS[len(THRESHOLDS) // 2]
-            _, default_kept = patch_grids[mode][default_thresh]
-            img_results[mode] = {
-                "kept": default_kept,
-                "scores_min": scores.min().item() if mode != "none" else 0.0,
-                "scores_max": scores.max().item() if mode != "none" else 0.0,
-                "scores_mean": scores.mean().item() if mode != "none" else 0.0,
-            }
+                # --- Compute masks + patch grids for each threshold ---
+                # All scores are similarity-like (higher = more relevant).
+                # identify_relevant_patches keeps patches with the highest scores.
+                for thresh in THRESHOLDS:
+                    keep_mask = filter_patches_by_text_alignment(
+                        patches_norm,
+                        target_class_idx=target_class_idx,
+                        text_features=text_features,
+                        empty_text_feat=empty_text_feat,
+                        filter_mode=mode,
+                        filter_threshold=thresh,
+                        precomputed_scores=mode_scores,
+                        encoder=encoder,
+                    )  # [P]
 
-        # --- Composite figure ---
-        # Row 0: Original | heatmap overlays (one per filter mode)
-        # Rows 1..N: Patch grids for each threshold (one row per threshold)
-        n_filter_modes = len(FILTER_MODES) - 1  # exclude "none"
-        n_thresholds = len(THRESHOLDS)
-        n_cols = 1 + n_filter_modes  # original + filter modes
-        n_rows = 1 + n_thresholds     # heatmap row + threshold rows
+                    kept = int(keep_mask.sum())
+                    fg_patches = extract_foreground_patches(
+                        resized_img, keep_mask, side, patch_size
+                    )
 
-        fig_height = 4 + n_thresholds * 2.5
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, fig_height))
+                    if fg_patches:
+                        n_cols = min(len(fg_patches), 14)
+                        n_rows = math.ceil(len(fg_patches) / n_cols)
+                        grid_w = n_cols * patch_size
+                        grid_h = n_rows * patch_size
+                        grid_img = Image.new("RGB", (grid_w, grid_h), color=(0, 0, 0))
+                        for i, patch_pil in enumerate(fg_patches):
+                            col_idx = i % n_cols
+                            row_idx = i // n_cols
+                            patch_resized = patch_pil.resize((patch_size, patch_size), Image.LANCZOS)
+                            grid_img.paste(patch_resized, (col_idx * patch_size, row_idx * patch_size))
+                        patch_grids[mode][thresh] = (np.array(grid_img), kept)
+                    else:
+                        patch_grids[mode][thresh] = (None, 0)
 
-        # Row 0 — heatmaps
-        axes[0, 0].imshow(np.array(pil_img.convert("RGB")))
-        axes[0, 0].set_title(f"{img_stem}\n(original)", fontsize=10, pad=5)
-        axes[0, 0].axis("off")
+                # Store stats for the "default" threshold (middle one)
+                default_thresh = THRESHOLDS[len(THRESHOLDS) // 2]
+                _, default_kept = patch_grids[mode][default_thresh]
+                img_results[mode] = {
+                    "kept": default_kept,
+                    "scores_min": mode_scores.min().item() if mode_scores is not None else 0.0,
+                    "scores_max": mode_scores.max().item() if mode_scores is not None else 0.0,
+                    "scores_mean": mode_scores.mean().item() if mode_scores is not None else 0.0,
+                }
 
-        for c, (mode, overlay_np) in enumerate(heatmap_images):
-            if mode == "none":
-                continue
-            ax = axes[0, c]
-            ax.imshow(overlay_np)
-            ax.set_title(f"{mode}\n(heatmap)", fontsize=9, pad=5)
-            ax.axis("off")
+            # --- Composite figure ---
+            # Row 0: Original | heatmap overlays (one per filter mode)
+            # Rows 1..N: Patch grids for each threshold (one row per threshold)
+            n_filter_modes = len(FILTER_MODES) - 1  # exclude "none"
+            n_thresholds = len(THRESHOLDS)
+            n_cols = 1 + n_filter_modes  # original + filter modes
+            n_rows = 1 + n_thresholds     # heatmap row + threshold rows
 
-        # Rows 1..N — patch grids per threshold
-        active_modes = [m for m in FILTER_MODES if m != "none"]
-        for r, thresh in enumerate(THRESHOLDS):
-            row_idx = r + 1
-            # First column: label
-            axes[row_idx, 0].set_title(f"threshold ≥ {thresh}", fontsize=10, pad=5)
-            axes[row_idx, 0].axis("off")
-            axes[row_idx, 0].set_facecolor("#f0f0f0")
+            fig_height = 4 + n_thresholds * 2.5
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, fig_height))
 
-            for c, mode in enumerate(active_modes):
-                ax = axes[row_idx, c + 1]
-                grid_np, kept = patch_grids[mode][thresh]
-                if grid_np is not None:
-                    ax.imshow(grid_np)
-                else:
-                    ax.text(0.5, 0.5, "0 patches", ha="center", va="center",
-                            transform=ax.transAxes, fontsize=10)
-                    ax.set_facecolor("#222222")
-                ax.set_title(f"{mode}\n{kept}/{num_patches}", fontsize=8, pad=3)
+            # Row 0 — heatmaps
+            axes[0, 0].imshow(np.array(pil_img.convert("RGB")))
+            axes[0, 0].set_title(f"{img_stem}\n(original)", fontsize=10, pad=5)
+            axes[0, 0].axis("off")
+
+            for c, (mode, overlay_np) in enumerate(heatmap_images):
+                if mode == "none":
+                    continue
+                ax = axes[0, c]
+                ax.imshow(overlay_np)
+                ax.set_title(f"{mode}\n(heatmap)", fontsize=9, pad=5)
                 ax.axis("off")
 
-        fig.suptitle(f"{img_stem} — label: {label}", fontsize=14, fontweight="bold", y=0.98)
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
-        composite_path = OUTPUT_DIR / f"{img_stem}_composite.png"
-        fig.savefig(composite_path, dpi=150)
-        plt.close(fig)
-        print(f"\n    Saved composite → {composite_path}")
+            # Rows 1..N — patch grids per threshold
+            active_modes = [m for m in FILTER_MODES if m != "none"]
+            for r, thresh in enumerate(THRESHOLDS):
+                row_idx = r + 1
+                # First column: label
+                axes[row_idx, 0].set_title(f"threshold ≥ {thresh}", fontsize=10, pad=5)
+                axes[row_idx, 0].axis("off")
+                axes[row_idx, 0].set_facecolor("#f0f0f0")
 
-        results[img_stem] = img_results
+                for c, mode in enumerate(active_modes):
+                    ax = axes[row_idx, c + 1]
+                    grid_np, kept = patch_grids[mode][thresh]
+                    if grid_np is not None:
+                        ax.imshow(grid_np)
+                    else:
+                        ax.text(0.5, 0.5, "0 patches", ha="center", va="center",
+                                transform=ax.transAxes, fontsize=10)
+                        ax.set_facecolor("#222222")
+                    ax.set_title(f"{mode}\n{kept}/{num_patches}", fontsize=8, pad=3)
+                    ax.axis("off")
+
+            fig.suptitle(f"{img_stem} — label: {target_label}", fontsize=14, fontweight="bold", y=0.98)
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            suffix = f"_{target_label}" if len(target_labels) > 1 else ""
+            composite_path = OUTPUT_DIR / f"{img_stem}{suffix}_composite.png"
+            fig.savefig(composite_path, dpi=150)
+            plt.close(fig)
+            print(f"\n    Saved composite → {composite_path}")
+
+            results_key = f"{img_stem}_{target_label}" if len(target_labels) > 1 else img_stem
+            results[results_key] = img_results
 
     # --- Summary ---
     print(f"\n{'=' * 70}")
