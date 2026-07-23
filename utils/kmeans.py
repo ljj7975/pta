@@ -168,12 +168,6 @@ def _gaussian_score_for_class(
 
     rep_patches = torch.stack(rep_centers, dim=0)  # [G, D]
 
-    # DEBUG: trace patch grouping
-    if return_details:
-        print(f"    [DEBUG _gaussian_score_for_class] num_groups={len(group_members)}  K={K}")
-        for gi, members in enumerate(group_members):
-            print(f"      group {gi}: {len(members)} patches (indices: {members.cpu().numpy().tolist()[:10]}{'...' if len(members) > 10 else ''})")
-
     # ── Gaussian score between each patch group and each prototype ─────────
     # diff[g, k, d] = rep_patches[g, d] - centers_norm[k, d]
     # gaussian_score[g, k] = exp(-0.5 * Σ_d diff² / variance_k_d)
@@ -192,18 +186,6 @@ def _gaussian_score_for_class(
     scaled_maha = (diff.pow(2) / var_clamped[None, :, :]).sum(dim=-1)  # [G, K]
     gaussian_scores = torch.exp(-0.5 * scaled_maha)  # [G, K]
 
-    # DEBUG: trace gaussian_scores matrix
-    if return_details:
-        gs = gaussian_scores.cpu().numpy()
-        print(f"    [DEBUG _gaussian_score_for_class] gaussian_scores [{gs.shape[0]}x{gs.shape[1]}]:")
-        print(f"      min={gs.min():.6f}  max={gs.max():.6f}  mean={gs.mean():.6f}")
-        print(f"      scaled_maha (pre-exp): min={scaled_maha.cpu().numpy().min():.4f}  "
-              f"max={scaled_maha.cpu().numpy().max():.4f}  mean={scaled_maha.cpu().numpy().mean():.4f}")
-        # Print the matrix as a compact table
-        for gi in range(gs.shape[0]):
-            row_str = ", ".join(f"{v:.4f}" for v in gs[gi])
-            print(f"      group {gi}: [{row_str}]")
-
     # ── One-to-one assignment (same as MPTA) ───────────────────────────────
     num_groups, K = gaussian_scores.shape
     proto_best_vals = gaussian_scores.max(dim=0).values
@@ -216,25 +198,14 @@ def _gaussian_score_for_class(
         scores[used_groups] = float("-inf")
         best_val, group_idx = scores.max(dim=0)
         if torch.isneginf(best_val):
-            if return_details:
-                print(f"    [DEBUG assignment] proto {proto_idx}: no available group (all used or -inf), score=0")
             continue
         best_per_proto[proto_idx] = best_val
         used_groups[group_idx] = True
-        if return_details:
-            print(f"    [DEBUG assignment] proto {proto_idx} ← group {group_idx.item()}  score={best_val.item():.6f}")
 
     # ── Appearance weighting and top-M aggregation ─────────────────────────
     denom = max(float(update_samples), 1e-6)
     app_w = appearance / denom
     weighted = best_per_proto * app_w  # [K]
-
-    # DEBUG: trace final scores before aggregation
-    if return_details:
-        print(f"    [DEBUG _gaussian_score_for_class] best_per_proto: {best_per_proto.cpu().numpy().tolist()}")
-        print(f"    [DEBUG _gaussian_score_for_class] app_w: {app_w.cpu().numpy().tolist()}")
-        print(f"    [DEBUG _gaussian_score_for_class] weighted: {weighted.cpu().numpy().tolist()}")
-        print(f"    [DEBUG _gaussian_score_for_class] top_m={top_m}  aggregation={aggregation}")
 
     k = min(top_m, weighted.numel())
     if k <= 0:
@@ -252,6 +223,10 @@ def _gaussian_score_for_class(
         top_m_val = weighted.topk(k).values.mean()
         all_mean = weighted.mean()
         score = (top_m_val + all_mean) / 2.0
+    elif aggregation == "weighted_mean":
+        # Appearance-weighted average: sum(best_per_proto * app_w) / sum(app_w)
+        app_w_sum = app_w.sum()
+        score = weighted.sum() / app_w_sum.clamp(min=1e-6)
     else:
         score = weighted.topk(k).values.mean()
 

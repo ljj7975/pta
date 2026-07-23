@@ -114,12 +114,15 @@ def _assignment_overlay(image_np: np.ndarray, assignments, K: int,
 def _crops_strip(image_np: np.ndarray, assignments, K: int,
                  sims: np.ndarray = None,
                  max_per_cluster: int = 12, cell: int = 32,
-                 state_after_i: dict = None, tensors: list = None) -> np.ndarray:
+                 state_after_i: dict = None, tensors: list = None,
+                 keep_mask: np.ndarray = None) -> np.ndarray:
     """
     Build a [K × (cell+6), W, 3] uint8 canvas.
 
     Each row = one cluster:
       [4px color stripe] [top-3 rep patches with border] [gap] [patch crops from current image]
+
+    keep_mask: [196] bool array — when provided, only show patches where True.
     """
     if assignments is None or K == 0:
         return np.full((cell, cell, 3), 200, dtype=np.uint8)
@@ -138,6 +141,7 @@ def _crops_strip(image_np: np.ndarray, assignments, K: int,
 
         entries = top_rep[k] if k < len(top_rep) else []
         border_color = (_rgb(k) * 255).astype(np.uint8)
+
         for j, (rpidx, rimgidx, _) in enumerate(entries[:n_rep]):
             if rpidx >= 0 and rimgidx >= 0 and tensors is not None and rimgidx < len(tensors):
                 rep_img = _denorm(tensors[rimgidx].squeeze(0))
@@ -153,6 +157,8 @@ def _crops_strip(image_np: np.ndarray, assignments, K: int,
                 canvas[y:y + cell, x:x + cell] = thumb
 
         patch_indices = np.where(assignments == k)[0]
+        if keep_mask is not None:
+            patch_indices = patch_indices[keep_mask[patch_indices]]
         if sims is not None and k < sims.shape[1]:
             patch_sims = sims[patch_indices, k]
             sorted_order = np.argsort(-patch_sims)
@@ -261,8 +267,12 @@ def _save_step_figure(
 
     overlay_i    = _assignment_overlay(img_i,    assign_i,    K)
     overlay_next = _assignment_overlay(img_next, assign_next, K)
+
+    km = state_after_i.get("keep_mask", None)
+    km_np = km.cpu().numpy() if km is not None else None
     strip        = _crops_strip(img_i, assign_i, K, sims=sims_i,
-                                state_after_i=state_after_i, tensors=tensors)
+                                state_after_i=state_after_i, tensors=tensors,
+                                keep_mask=km_np)
 
     # Filter heatmap for test image (image_{i+1})
     filter_overlay_next = img_next.copy()
@@ -376,9 +386,13 @@ def _save_step_figure(
         row_h = 32 + 6
         n_images = int(state_after_i["n_images"])
         appearances = state_after_i["appearance"].cpu().numpy()
+        km = km_np  # keep_mask from outer scope (already numpy)
         for k in range(K):
             y_frac = ((k * row_h + row_h / 2) / strip.shape[0])
-            n_patches = int((assign_i == k).sum())
+            if km is not None:
+                n_patches = int(((assign_i == k) & km).sum())
+            else:
+                n_patches = int((assign_i == k).sum())
             app_raw = int(round(appearances[k]))
             app_w = appearances[k] / max(n_images, 1)
             ax1.text(
@@ -490,7 +504,7 @@ def _build_cfg(args, filter_mode: str) -> dict:
             "soft_nn_top_m":                4,
             "quality_eps":                  1e-3,
             "patch_group_threshold":        0.9,
-            "aggregation":                  "top_m_mean",
+            "aggregation":                  "weighted_mean",
             "patch_filter_mode":            filter_mode,
             "patch_filter_threshold":       args.filter_threshold,
         }

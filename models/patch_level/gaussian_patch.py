@@ -219,15 +219,6 @@ class GaussianPatchLevel(BasePatchLevel):
         for c in range(num_classes):
             if states[c]["centers"].shape[0] > 0:
                 centers_norm = _safe_normalize(states[c]["centers"])
-                # DEBUG: trace inputs to _gaussian_score_for_class
-                if return_details:
-                    var = states[c]["variance"]  # [K, D]
-                    print(f"    [DEBUG compute_patch_logits] class={c}  K={var.shape[0]}  D={var.shape[1]}")
-                    print(f"      variance: min={var.min().item():.6f}  max={var.max().item():.6f}  "
-                          f"mean={var.mean().item():.6f}  per_proto_mean={var.mean(dim=1).cpu().numpy().tolist()}")
-                    print(f"      appearance: {states[c]['appearance'].cpu().numpy().tolist()}")
-                    print(f"      n_images: {states[c]['n_images']}")
-                    print(f"      patches_norm shape: {patches_norm.shape}")
                 result = _gaussian_score_for_class(
                     patches_norm,
                     centers_norm,
@@ -306,6 +297,15 @@ class GaussianPatchLevel(BasePatchLevel):
                 encoder=encoder,
             )
             patches_norm = patches_norm[keep_mask]  # [P_filtered, D]
+
+        # Map filtered indices back to original grid positions (0..P-1)
+        # When filter_mode="none", keep_mask is None and this is identity.
+        P = 14 * 14
+        if keep_mask is not None:
+            _concat_indices = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
+            _filtered_to_grid = (_concat_indices % P).long()
+        else:
+            _filtered_to_grid = torch.arange(patches_norm.shape[0], device=patches_norm.device).long()
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]
@@ -404,7 +404,7 @@ class GaussianPatchLevel(BasePatchLevel):
                     candidate_sims = sims_to_centers[candidate_indices, k]
                     top_vals, top_local_pos = candidate_sims.topk(min(_TOP3, candidate_sims.numel()))
                     new_cands = [
-                        (int(candidate_indices[pos].item()), current_image_idx, float(sim))
+                        (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx, float(sim))
                         for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                     ]
                     new_top_rep.append(_merge_top3(old_entries, new_cands))
@@ -417,7 +417,7 @@ class GaussianPatchLevel(BasePatchLevel):
                 candidate_sims = sims_to_centers[candidate_indices, 0]
                 top_vals, top_local_pos = candidate_sims.topk(min(_TOP3, candidate_sims.numel()))
                 new_top_rep.append([
-                    (int(candidate_indices[pos].item()), current_image_idx, float(sim))
+                    (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx, float(sim))
                     for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                 ])
             else:
@@ -429,7 +429,7 @@ class GaussianPatchLevel(BasePatchLevel):
                 sims_new = sims_to_centers[group_idx, new_k]
                 top_vals, top_local_pos = sims_new.topk(min(_TOP3, sims_new.numel()))
                 new_top_rep.append([
-                    (int(group_idx[pos].item()), current_image_idx, float(sim))
+                    (int(_filtered_to_grid[group_idx[pos]].item()), current_image_idx, float(sim))
                     for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                 ])
             else:
@@ -456,6 +456,11 @@ class GaussianPatchLevel(BasePatchLevel):
         state["appearance"] = updated_apps
         state["n_images"] = state["n_images"] + 1
         state["top_rep_patches"] = new_top_rep
+        if keep_mask is not None:
+            state["keep_mask"] = keep_mask[:P]
+        else:
+            state["keep_mask"] = torch.ones(P, dtype=torch.bool, device=updated_centers.device)
+
         return state
 
 
