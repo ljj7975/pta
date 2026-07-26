@@ -1,0 +1,1835 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 7c0c5dd..bdf5eb7 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -4,67 +4,33 @@ Research codebase for ICML 2026 paper: "Prototype-Based Test-Time Adaptation of
+ 
+ ---
+ 
+-## Remote Execution
+-
+-All commands must run on the remote Jetson server — never locally. Files are synced automatically on save via SFTP.
+-
+-- **SSH alias**: `jetson` (10.88.111.59, user: brandon)
+-- **Remote project root**: `/home/brandon/repos/pta`
+-- **Env**: venv at `~/repos/pta/pta/` — activate with `source pta/bin/activate`
+-
+-All commands run from the repo root (`/home/brandon/repos/pta`). Always activate the venv inline — `source` works fine in non-interactive SSH sessions.
+-
+-### Command pattern
+-
+-```bash
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && <command>"
+-```
+-
+-### Useful one-offs
+-
+-```bash
+-# GPU status
+-ssh jetson "nvidia-smi"
+-
+-# Check running jobs
+-ssh jetson "ps aux | grep python"
+-
+-# Read output file
+-ssh jetson "cat /home/brandon/repos/pta/outputs/result.txt"
+-
+-# List installed packages
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && pip list"
+-```
+-
+----
+-
+ ## Running Experiments
+ 
+ ### Cross-Domain Generalization
+ 
+ ```bash
+ # ViT-B/16 backbone (all 10 CD datasets)
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_cd_benchmark_vit.sh"
++bash scripts/run_cd_benchmark_vit.sh
+ 
+ # ResNet-50 backbone
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_cd_benchmark_rn50.sh"
++bash scripts/run_cd_benchmark_rn50.sh
+ ```
+ 
+ ### OOD Generalization (ImageNet variants)
+ 
+ ```bash
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_ood_benchmark_vit.sh"
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_ood_benchmark_rn50.sh"
++bash scripts/run_ood_benchmark_vit.sh
++bash scripts/run_ood_benchmark_rn50.sh
+ ```
+ 
+ ### Manual single-dataset run
+ 
+ ```bash
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runner.py \
++python runner.py \
+   --method pta \
+   --config configs \
+   --datasets caltech101 \
+-  --backbone ViT-B/16"
++  --backbone ViT-B/16
+ ```
+ 
+ `--datasets` accepts `/`-separated names (e.g. `I/A/V/R/S` or `caltech101/dtd`).  
+@@ -73,11 +39,11 @@ ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runn
+ ### Running a different/new method
+ 
+ ```bash
+-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runner.py \
++python runner.py \
+   --method my_new_method \
+   --config configs \
+   --datasets caltech101 \
+-  --backbone ViT-B/16"
++  --backbone ViT-B/16
+ ```
+ 
+ Create `models/my_new_method.py` implementing `BaseAdapter` — no changes to `runner.py` needed.
+@@ -129,7 +95,7 @@ Dataset name aliases for `--datasets`:
+ ## Gotchas
+ 
+ - `clip/` is a **local vendored copy** of CLIP. Never `pip install clip` — `import clip` resolves to this local directory.
+-- `outputs/` must exist before running or the script crashes. Create it with `ssh jetson "mkdir -p /home/brandon/repos/pta/outputs"`.
++- `outputs/` must exist before running or the script crashes. Create it with `mkdir -p outputs`.
+ - `build_test_data_loader` in `utils.py` raises a bare string (`raise "Dataset is not..."`) — not a real exception in Python 3. Use `raise ValueError(...)` when extending dataset support.
+ - `pta_runner.py` is deprecated — all scripts use `runner.py`.
+ - `batch_size=1` is hardcoded in test loaders — TTA processes one sample at a time by design.
+diff --git a/PROTO_VIZ.md b/PROTO_VIZ.md
+deleted file mode 100644
+index 9eae30b..0000000
+--- a/PROTO_VIZ.md
++++ /dev/null
+@@ -1,174 +0,0 @@
+-# Prototype Visualizer — `proto_viz_app.py`
+-
+-Web GUI for inspecting how MultiProtoPTA builds and uses patch-level prototype
+-banks during test-time adaptation. Runs in two modes: **live** (loads CLIP and
+-a dataset, processes samples in real time) or **replay** (loads pre-saved
+-records from a previous live run).
+-
+----
+-
+-## Requirements
+-
+-- All packages from the `pta` conda environment
+-- Web dependencies in `requirements.txt`: `fastapi`, `uvicorn`, `jinja2`
+-- Browser access to the host/port where the server runs
+-
+----
+-
+-## Quick start
+-
+-```bash
+-conda activate /share_98/projects/brandon/envs/pta
+-
+-# Start web app (default: http://127.0.0.1:8000)
+-python proto_viz_app.py
+-
+-# Expose on all interfaces
+-python proto_viz_app.py --host 0.0.0.0 --port 8000
+-
+-# Preload a replay file at startup
+-python proto_viz_app.py --records outputs/viz/caltech101_n500.pkl
+-```
+-
+----
+-
+-## CLI arguments
+-
+-| Argument | Default | Description |
+-|---|---|---|
+-| `--host` | `127.0.0.1` | Host interface for uvicorn. |
+-| `--port` | `8000` | Port for uvicorn. |
+-| `--reload` | off | Enable auto-reload for web development. |
+-| `--records PATH` | `None` | Optionally preload pre-saved `.pkl` records on startup. |
+-
+----
+-
+-## Web GUI controls
+-
+-```
+-Top controls include:
+-- `Next Sample` button (advance by one sample)
+-- `Restart` button (jump back to sample 0)
+-- `Load` controls for choosing dataset/mode and live settings
+-- `Save Current` button (exports current sample info as JSON)
+-```
+-
+-The page still shows the same score breakdown table, top prototype match table,
+-and per-class bank stats used in the Tkinter tool.
+-
+-**Score breakdown table** — one row per class, sorted by final logit
+-(highest = most likely prediction). Columns:
+-
+-| Column | Meaning |
+-|---|---|
+-| `class` | Class name |
+-| `bank_K` | Number of patch prototypes currently stored for this class |
+-| `text_score` | `100 × cos(text_embedding, global_image_feature)` — the CLIP zero-shot contribution |
+-| `raw_proto` | Evidence-weighted prototype bank score before mean-centering |
+-| `centered` | `raw_proto − mean(raw_proto over all classes)` — what actually gets added to the logit |
+-| `final_logit` | `text_score + τ × centered` — the number argmax is taken over |
+-| `prob%` | `softmax(final_logits)[c]` as a percentage |
+-
+-Rows are highlighted: **green** = ground-truth class, **red** = predicted class
+-when the prediction is wrong.
+-
+-**Top prototype matches table** — the 20 highest cosine-similarity hits between
+-any patch of the current image and any stored prototype across all classes.
+-Useful for seeing which prototypes are activating and whether they belong to the
+-correct class.
+-
+-| Column | Meaning |
+-|---|---|
+-| `class` | Class that owns this prototype |
+-| `proto#` | Index of the prototype within that class's bank |
+-| `appear` | Number of images this prototype has been matched in |
+-| `evid_w` | Evidence weight: `min(1, 0.5 + 0.5×(K−1)/4)` — ramps from 0.5 at K=1 to 1.0 at K=5 |
+-| `max_sim` | Highest cosine similarity between any patch in the current image and this prototype |
+-| `centered_s` | Per-prototype contribution to the centered score |
+-| `contrib` | `τ × centered_logit[c]` — actual delta added to the final logit for this class |
+-
+-**Bank stats panel** — detailed breakdown for the class selected in the combobox
+-(defaults to the ground-truth class). Click any row in the score breakdown table
+-to switch the selected class.
+-
+----
+-
+-## Saved records and exports
+-
+-Live mode saves a `.pkl` file to `outputs/viz/<dataset>_n<N>.pkl`. Each record
+-is a `SampleRecord` (defined in `utils/proto_viz.py`) containing:
+-
+-- The global image feature and all patch embeddings `[P, D]`
+-- Per-class score breakdown (`ClassRecord` list)
+-- Top-20 prototype matches (`MatchInfo` list), each with the top-3 patch indices
+-  that produced the match
+-- Running accuracy up to that sample
+-
+-Records are plain Python dataclasses serialised with `pickle`, so you can load
+-and inspect them in a notebook:
+-
+-```python
+-from utils.proto_viz import ProtoVizEngine, SampleRecord
+-
+-records = ProtoVizEngine.load_records("outputs/viz/caltech101_n500.pkl")
+-
+-rec = records[42]
+-print(rec.target_name, "→", rec.predicted_name, "correct:", rec.correct)
+-
+-# Top match
+-m = rec.top_matches[0]
+-print(m.proto.class_name, "proto", m.proto.proto_idx,
+-      "sim=", m.max_patch_sim, "appear=", m.proto.appearance)
+-
+-# All class scores
+-for cr in sorted(rec.classes, key=lambda c: -c.final_logit)[:5]:
+-    print(f"  {cr.class_name:<30} logit={cr.final_logit:.2f}  K={cr.bank_size}")
+-```
+-
+-`Save Current` from the web UI writes one JSON file to `outputs/viz_exports/`
+-using:
+-
+-`YYYYmmdd_HHMMSS_<dataset>_sample<idx>.json`
+-
+-Example:
+-
+-`20260609_143512_caltech101_sample00042.json`
+-
+----
+-
+-## Reusable utils layer
+-
+-Frontend-independent helpers now live in `utils/proto_viz_session.py`:
+-
+-- `list_available_datasets(config_dir)`
+-- `sample_record_to_dict(record, selected_class_name=None)`
+-- `ProtoVizSession.load_live(...)`
+-- `ProtoVizSession.load_replay(...)`
+-- `ProtoVizSession.next()` / `restart()` / `set_index(idx)`
+-- `ProtoVizSession.export_current(output_dir="outputs/viz_exports")`
+-
+-These functions are documented with docstrings and are intended for reuse by
+-future debugging tools (web UI, notebook widgets, CLI inspectors, etc.).
+-
+----
+-
+-## How the engine mirrors MultiProtoPTA
+-
+-`ProtoVizEngine` (`utils/proto_viz.py`) is a faithful reimplementation of
+-`MultiProtoPTABase.run()` that records all intermediate values instead of
+-discarding them. It reads the same config keys with the same defaults:
+-
+-| Config key | Default | Effect |
+-|---|---|---|
+-| `max_K` | 30 | Max prototypes per class |
+-| `match_threshold` | 0.8 | Cosine threshold for patch-to-prototype matching |
+-| `conf_threshold` | 0.1 | Min CLIP confidence to trigger a prototype update |
+-| `tau_proto` / `T` | 20.0 | Scale factor on the centered proto score |
+-| `proto_top_n` | 5 | Top-K prototypes averaged for the bank score |
+-| `disable_centering` | False | Skip mean-centering of proto scores |
+-| `penalize_common` | True | Apply cross-class commonness penalty |
+-| `common_threshold` | 0.7 | Cosine threshold for the commonness penalty |
+-| `topk_update` | 1 | Number of top-confidence classes updated per sample |
+-| `adaptive_tau` | False | Scale τ by proto-score variance |
+-
+-Pass these in your YAML config alongside `alpha` and `T` to override defaults.
+diff --git a/configs/base.yaml b/configs/base.yaml
+index 62fa572..dffe910 100644
+--- a/configs/base.yaml
++++ b/configs/base.yaml
+@@ -22,7 +22,18 @@ patch_level:
+   gaussian_ema: 0.1
+   variance_min: 0.001
+   variance_max: 1.0
++  # Per-prototype score normalization. Active when `aggregation` is a zscore_*
++  # variant (zscore_weighted_mean | zscore_top_m_mean), or when tracking is
++  # forced on for diagnostics. `aggregation` itself is left unset here so the
++  # code default (top_m_mean) keeps existing runs unchanged.
++  proto_stats_track: false      # accumulate stats even on raw-score aggregations
++  proto_stats_min_count: 10     # reference observations before a prototype's z is trusted
++  proto_stats_sigma_eps: 1.0e-6 # floor on sigma when dividing
++  proto_stats_sigma_warn: 1.0e-4 # below this sigma a prototype is flagged near-degenerate
++  proto_stats_log_every: 0      # print a stats health line every N images (0 = off)
+ 
+ fusion:
+   type: ProtoAlphaFusion
+   tau_text: 1.0
++  patch_squash: none            # none | tanh — bound the patch term before fusion
++  patch_squash_scale: 3.0       # tanh(patch_logits / scale)
+diff --git a/configs/diagnostic_pta/diagnostic_pta.yaml b/configs/diagnostic_pta/diagnostic_pta.yaml
+index 3c29ce2..5d7e69e 100644
+--- a/configs/diagnostic_pta/diagnostic_pta.yaml
++++ b/configs/diagnostic_pta/diagnostic_pta.yaml
+@@ -10,6 +10,6 @@ patch_level:
+ 
+ fusion:
+   tau_image_proto: 80.0
+-  mode: interpolate          # interpolate | alpha_gate | tau_gate | hybrid
++  mode: patch_only           # patch_only | image_only
+   quality_modulation: 1.0
+   alpha_gate_scale: 0.5
+diff --git a/docs/proto_zscore_changelog.md b/docs/proto_zscore_changelog.md
+new file mode 100644
+index 0000000..c4583cd
+--- /dev/null
++++ b/docs/proto_zscore_changelog.md
+@@ -0,0 +1,237 @@
++# Prototype Score Normalization — Change Report
++
++Implementation of `prototype_score_normalization_and_class_aggregation.md`:
++per-prototype z-score normalization with appearance-weighted class aggregation.
++
++**Date:** 2026-07-26
++**Scope:** 5 files modified, 4 files added. No adapter `run()` loop was touched —
++both target settings are reached by config alone.
++
++---
++
++## Design decisions taken before implementing
++
++Three points where the spec did not map cleanly onto this codebase:
++
++| Question | Decision | Why |
++|---|---|---|
++| Where do `mu` / `sigma` come from? The doc says "training/reference split". | **Online running statistics** over the test stream. | This repo has no train split at all — every dataset class passes only `test=` to `DatasetBase`, and `utils/data.py` exposes only `build_test_data_loader`. Building one would have broken the TTA claim. Each image is scored using statistics from *previously seen* images only, then folded in, which satisfies doc requirement #9 with zero leakage. |
++| Prototypes that win no patch group score exactly `0.0`. Include them? | **Include** in both statistics and z-scoring. | A prototype that usually fires but is absent now yields a negative z — an active "this class's signature is missing" vote. Consequence: class scores can go negative, unlike the old `[0,1]` range. |
++| Z-scores are unbounded (~`[-3,+10]`) but `tau_patch_proto=20` was tuned for `[0,1]`. | **Sweep tau, and expose an optional `tanh` squash.** | Scale-invariant for `patch_only` (pure argmax), but the linear fusion in `patch_modulated_pta` genuinely needs rescaling. |
++
++---
++
++## Files added
++
++### `utils/proto_stats.py` — new, 183 lines
++
++Running reference-score statistics per prototype. Pure helpers, kept out of
++`utils/kmeans.py` so that file stays focused on clustering/scoring.
++
++State is three parallel `[K]` tensors held per class alongside `appearance`:
++`score_count`, `score_sum`, `score_sqsum`.
++
++| Function | Role |
++|---|---|
++| `init_stats(K, device)` | Three zero tensors. |
++| `has_stats(state)` | Guard for banks predating this feature. |
++| `accumulate(state, best_per_proto)` | Fold one image's raw scores in. Returns new tensors. |
++| `compute_mu_sigma(state, min_count, sigma_eps)` | `(mu, sigma, valid)`. Population variance via `E[x²]-mu²` with `clamp(min=0)` against catastrophic cancellation, then Bessel-corrected where `count > 1`. |
++| `zscore(raw, mu, sigma, valid, sigma_eps)` | `(raw-mu)/max(sigma,eps)`; invalid prototypes abstain at `0.0`. |
++| `grow(state, new_K, device)` | Pad accumulators when the bank grows; new prototypes start at zero. |
++| `permute(stats, keep_idx)` | Reindex to follow a prune. |
++| `low_variance_count(sigma, valid, sigma_warn)` | Doc requirement 1.4 — flag near-degenerate reference distributions. |
++
++`sigma_eps` defaults to `1e-6`, matching the existing `clamp(min=1e-6)` idiom at
++`utils/kmeans.py:229`.
++
++### `scripts/slurm_proto_zscore.sh` — new, 182 lines
++
++9 experiments × 7 datasets (`caltech101 dtd eurosat fgvc oxford_flowers
++oxford_pets ucf101`) → `#SBATCH --array=0-62`. Follows
++`slurm_patch_only_sweep_agg.sh` conventions exactly (same SBATCH header,
++`exp()` registry, `N_EXP==0` / oversized-array guards, unquoted `--override`
++word-splitting). Writes to `outputs/proto_zscore_results.txt`.
++
++- **Setting 2** — `diagnostic_pta` + `fusion.mode=patch_only`: raw baseline,
++  z-score, z-score with `min_count=20`. Scale-invariant argmax, so no tau sweep;
++  this is the cleanest read on whether z-scoring helps.
++- **Setting 1** — `patch_modulated_pta`: raw baseline, z-score × `tau_patch_proto
++  ∈ {0.5, 1, 2, 5}`, and z-score + `patch_squash=tanh` at the original tau=20.
++
++### `configs/diagnostic_pta/caltech101.yaml`, `ucf101.yaml` — new, 2 lines each
++
++Two-line `defaults:` stubs. `configs/diagnostic_pta/` previously covered only 5
++datasets, so without these the two settings could not sweep the same 7-dataset
++cross-domain core.
++
++---
++
++## Files modified
++
++### `utils/kmeans.py` (+60 / −3)
++
++Extended `_gaussian_score_for_class` (line 117) with `proto_mu`, `proto_sigma`,
++`proto_valid`, `sigma_eps` kwargs.
++
++New aggregation branch inserted after `app_w` is computed, **before** the
++existing raw chain, implementing the doc's formula verbatim:
++
++```python
++z = _zscore(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
++w_norm = app_w / app_w.sum().clamp(min=1e-6)      # doc §2.1
++z_weighted = w_norm * z
++score = z_weighted.sum()                          # doc S_c
++```
++
++- `zscore_weighted_mean` — the doc's weighted mean z-score.
++- `zscore_top_m_mean` — top-k of `w_norm * z`, for comparison.
++
++The `return_details` dict gains `mu`, `sigma`, `z`, `w_norm` while `best_per_proto`
++still carries the **raw** score, satisfying doc requirements #11 and #12
++(raw-vs-z comparison).
++
++**Bug fixed along the way:** the early returns at old lines 140-141 and 211-212
++returned a bare tensor even when `return_details=True`, crashing the caller's
++2-tuple unpack. Latent before (details were test-only) but the new path enables
++details in production, so both now honor the flag.
++
++### `models/patch_level/gaussian_patch.py` (+109 / −3)
++
++Four sites:
++
++1. **`init_state`** — adds the three accumulators via `proto_stats.init_stats(0, device)`.
++
++2. **`compute_patch_logits`** — reads the new config keys; enables statistics when
++   `aggregation.startswith("zscore")` or `proto_stats_track` is set. Per class it
++   derives `mu`/`sigma`/`valid` and passes them into scoring. It requests details
++   internally (`want_details = return_details or stats_enabled`) because the
++   z-path needs per-prototype raw scores. **After the entire class loop**, it calls
++   `_accumulate_proto_stats`.
++
++   > That ordering *is* the no-leakage guarantee: all scoring reads statistics
++   > first, all writes happen afterwards. The docstring now flags that this
++   > `compute_*` method mutates `states`.
++
++3. **`_accumulate_proto_stats`** (new method) — folds the image into every class's
++   statistics, refreshes `self.last_stats_diag` (`n_protos`, `n_valid`,
++   `n_low_var`, `mean_sigma`), and emits a rate-limited log line every
++   `proto_stats_log_every` calls.
++
++4. **`update_state`** — index lockstep, the highest-risk part of the change:
++   - `proto_stats.grow(...)` after `updated_apps` is built.
++   - `proto_stats.permute(updated_stats, keep)` inside the `> max_K` prune block,
++     right next to `updated_apps = updated_apps[keep]`. Omitting this would
++     silently attach every prototype's history to a *different* prototype.
++   - `state.update(updated_stats)` on write-back.
++
++### `models/fusion.py` (+27 / −3)
++
++`WeightedFusion.__init__` gains `patch_squash` (`none`|`tanh`, default `none`) and
++`patch_squash_scale` (default `3.0`), plus a `_squash_patch()` helper applied to
++the patch term in all three `forward` methods (`WeightedFusion`,
++`ProtoAlphaFusion`, `QualityGatedFusion`).
++
++Default `none` is a strict no-op. `tanh` is monotonic, so it cannot change a
++patch-only argmax — it only matters for the linear fusion in setting 1.
++
++### `models/patch_modulated_pta.py` (+4 / −1)
++
++- Its `__init__` rebuilds `fusion_cfg` from scratch with an explicit key list, so
++  it would have **silently dropped** the new squash keys. Both are now threaded
++  through.
++- Now honors the `RESULT_FILE` env var instead of hardcoding
++  `outputs/result.txt`, matching `diagnostic_pta.py:175`. Without this the sweep
++  could not collect both settings into one file.
++
++### `tests/debug_gaussian_patch.py` (+82 / −12)
++
++- New args: `--aggregation` (all 6 existing modes plus both `zscore_*`),
++  `--top-m`, `--proto-stats-min-count`. `_build_cfg` no longer hardcodes
++  `"aggregation": "weighted_mean"` or `soft_nn_top_m: 4`.
++- `--proto-stats-min-count` defaults to **2**, not the production 10 — this script
++  only walks ~6 images, so the production default would leave every prototype in
++  warm-up and every z-score at 0.
++- New `_print_proto_table()` prints exactly the doc's "Expected Output for
++  Debugging": per class, per prototype `raw_score | mu | sigma | z_score | app_w
++  | norm_w`, then `final_class_score`, then the predicted class. Falls back to a
++  raw-only layout for non-z aggregations.
++- Crop-strip figure annotations extended from `s=… → w=…` to
++  `s=… μ=… σ=… z=… → w=…` when z-scores are present.
++
++### `configs/base.yaml` (+11)
++
++Five `patch_level` keys (`proto_stats_track`, `proto_stats_min_count`,
++`proto_stats_sigma_eps`, `proto_stats_sigma_warn`, `proto_stats_log_every`) and
++two `fusion` keys (`patch_squash`, `patch_squash_scale`). `aggregation` is
++deliberately left unset so the code default `top_m_mean` keeps existing runs
++unchanged.
++
++### `configs/diagnostic_pta/diagnostic_pta.yaml` (+1 / −1)
++
++`fusion.mode: interpolate` → `patch_only`, and the stale comment
++(`interpolate | alpha_gate | tau_gate | hybrid`) corrected to
++`patch_only | image_only`.
++
++**This was a live crash**, not cosmetic: `models/diagnostic_pta.py:130` rejects
++anything but `patch_only`/`image_only`, so any `diagnostic_pta` run using the
++checked-in config raised `ValueError` on the first batch. Only the SLURM script's
++`--override` was keeping it alive.
++
++---
++
++## Verification
++
++The remote Jetson (10.88.111.59) was unreachable — SSH timed out — so **no GPU or
++real-dataset run was performed**. Verified on CPU instead (torch 2.2.2 is
++available locally; only torchvision is missing, which was stubbed).
++
++**39/39 checks pass:**
++
++- `mu` matches `torch.mean`; `sigma` matches `torch.std(unbiased=True)`.
++- Constant-score prototypes land on the eps floor rather than dividing by zero.
++- `S_c = Σ w'ᵢ·zᵢ` with `Σ w' = 1`, and `z = (raw−mu)/sigma`, across every
++  class-scoring in a synthetic stream.
++- **No leakage:** reference count at image *i* never exceeds *i*.
++- **Prune lockstep:** with `max_K=3` forcing eviction, `score_count/sum/sqsum`
++  stay the same length as `centers`/`appearance`; survivors keep their history;
++  `mu`/`sigma` stay finite with `sigma > 0`.
++- Cold-start prototypes abstain at `z=0`; `proto_stats_track` toggles
++  accumulation independently of the aggregation.
++- Zero-patch input honours `return_details` (the fixed unpack crash).
++- `patch_squash=none` is a no-op; `tanh` applies `tanh(z/scale)` and is monotonic.
++
++**No regression:** traces from all 6 raw aggregations over 14 images (including
++pruning) are **byte-identical** to a pristine `git archive HEAD` copy.
++
++**Doc conformance:** `_print_proto_table` reproduces the doc's worked example
++exactly — Class A = 1.6 `(0.5·3.0 + 0.3·1.0 + 0.2·−1.0)`, Class B = 0.8,
++prediction A.
++
++A real bug was found and fixed during verification: `sorted()` over the details
++dict crashed on the mixed `int` class keys and the `"keep_mask"` string key,
++which would have fired on every `debug_gaussian_patch.py` run with a
++`--filter-modes` other than `none` — the script's documented main use.
++
++### Still outstanding
++
++Requires the remote host:
++
++1. `MAX_BATCHES=50` baseline on `patch_modulated_pta` vs `main` (accuracy parity).
++2. `tests/test_pta_determinism.py` and `tests/test_vs_original.py` — the golden
++   snapshots in `tests/fidelity_snapshots/` that the CPU harness cannot substitute for.
++3. Smoke tests of both settings, and `sbatch scripts/slurm_proto_zscore.sh`.
++
++---
++
++## Known caveat, deliberately not addressed
++
++`quality_gate = proto_var / (proto_var + quality_eps)`
++(`gaussian_patch.py:241`) uses `quality_eps=1e-3`, tuned for scores in `[0,1]`.
++On the z scale the across-class variance is far larger, so the gate saturates to
++~1.0.
++
++Inert for `ProtoAlphaFusion` (the configured default, which ignores the gate),
++but it *also* modulates the image-level EMA in `patch_modulated_pta` via
++`quality_modulation`. Flagged in the SLURM script header as a follow-up sweep
++axis on `patch_level.quality_eps` rather than retuned blind.
+diff --git a/models/fusion.py b/models/fusion.py
+index 0ad3f9f..280188d 100644
+--- a/models/fusion.py
++++ b/models/fusion.py
+@@ -74,6 +74,24 @@ class WeightedFusion(BaseFusion):
+         self.tau_text = float(self._cfg.get("tau_text", 1.0))
+         self.tau_image_proto = float(self._cfg.get("tau_image_proto", 100.0))
+         self.tau_patch_proto = float(self._cfg.get("tau_patch_proto", 0.0))
++        self.patch_squash = str(self._cfg.get("patch_squash", "none"))
++        self.patch_squash_scale = float(self._cfg.get("patch_squash_scale", 3.0))
++
++    def _squash_patch(self, patch_proto_logits: Tensor) -> Tensor:
++        """Optionally bound the patch term before it enters the linear fusion.
++
++        Raw Gaussian prototype scores live in [0, 1], but z-score aggregations
++        are unbounded (roughly [-3, +10]), which puts them on a completely
++        different scale from ``tau_patch_proto``'s tuning. ``tanh`` maps them
++        back into [-1, 1] so the existing tau stays roughly valid.
++
++        Monotonic, so it cannot change the prediction of a patch-only argmax.
++        """
++        if self.patch_squash == "none":
++            return patch_proto_logits
++        if self.patch_squash == "tanh":
++            return torch.tanh(patch_proto_logits / self.patch_squash_scale)
++        raise ValueError(f"Unknown patch_squash: {self.patch_squash}")
+ 
+     def forward(
+         self,
+@@ -85,7 +103,7 @@ class WeightedFusion(BaseFusion):
+         result = self.tau_text * clip_logits.clone()
+         result += self.tau_image_proto * image_proto_logits
+         if patch_proto_logits is not None:
+-            result += self.tau_patch_proto * patch_proto_logits
++            result += self.tau_patch_proto * self._squash_patch(patch_proto_logits)
+         return result
+ 
+ 
+@@ -113,7 +131,10 @@ class ProtoAlphaFusion(WeightedFusion):
+         result += self.tau_image_proto * image_proto_logits
+         if patch_proto_logits is not None:
+             proto_alpha = kwargs.get("proto_alpha", 1.0)
+-            result += self.tau_patch_proto * proto_alpha * patch_proto_logits
++            result += (
++                self.tau_patch_proto * proto_alpha
++                * self._squash_patch(patch_proto_logits)
++            )
+         return result
+ 
+ 
+@@ -143,5 +164,8 @@ class QualityGatedFusion(ProtoAlphaFusion):
+         if patch_proto_logits is not None:
+             quality_gate = kwargs.get("quality_gate", 1.0)
+             proto_alpha = kwargs.get("proto_alpha", 1.0)
+-            result += self.tau_patch_proto * proto_alpha * quality_gate * patch_proto_logits
++            result += (
++                self.tau_patch_proto * proto_alpha * quality_gate
++                * self._squash_patch(patch_proto_logits)
++            )
+         return result
+diff --git a/models/patch_level/gaussian_patch.py b/models/patch_level/gaussian_patch.py
+index 5dd6961..8421eb6 100644
+--- a/models/patch_level/gaussian_patch.py
++++ b/models/patch_level/gaussian_patch.py
+@@ -23,6 +23,7 @@ from utils.clip_inference import (
+     compute_surgery_scores,
+     filter_patches_by_text_alignment,
+ )
++from utils import proto_stats
+ 
+ 
+ # Fixed augmentation ranges — not exposed as config
+@@ -112,6 +113,9 @@ class GaussianPatchLevel(BasePatchLevel):
+                 "appearance": torch.empty(0,    device=device),
+                 "n_images":   0,
+                 "top_rep_patches": [],  # list of lists: top-3 (patch_idx, image_idx, sim) per cluster
++                # Running reference-score statistics, one entry per prototype.
++                # Grown and permuted in lockstep with centers/variance/appearance.
++                **proto_stats.init_stats(0, device),
+             }
+             for _ in range(C)
+         ]
+@@ -174,6 +178,15 @@ class GaussianPatchLevel(BasePatchLevel):
+     def compute_patch_logits(self, images, encoder, states,
+                               return_details=False,
+                               *, filter_scores=None, target_class_idx=None):
++        """Score every class's prototype bank against one image.
++
++        Note: when prototype score statistics are enabled (a ``zscore_*``
++        aggregation, or ``proto_stats_track``) this method **mutates** the
++        per-class dicts in *states*, folding this image's raw prototype scores
++        into each bank's running reference distribution. The write happens only
++        after every class has been scored, so the current image is never part of
++        the statistics used to score it.
++        """
+         # ── Config ────────────────────────────────────────────────────────────
+         exclude_pos = bool(self._cfg.get("exclude_pos", False))
+         top_m = int(self._cfg.get("soft_nn_top_m", 4))
+@@ -182,6 +195,19 @@ class GaussianPatchLevel(BasePatchLevel):
+         variance_min = float(self._cfg.get("variance_min", 0.001))
+         aggregation = str(self._cfg.get("aggregation", "top_m_mean"))
+ 
++        # ── Prototype score statistics ────────────────────────────────────────
++        stats_min_count = int(self._cfg.get("proto_stats_min_count", 10))
++        stats_sigma_eps = float(self._cfg.get("proto_stats_sigma_eps", 1e-6))
++        stats_sigma_warn = float(self._cfg.get("proto_stats_sigma_warn", 1e-4))
++        stats_log_every = int(self._cfg.get("proto_stats_log_every", 0))
++        stats_enabled = (
++            aggregation.startswith("zscore")
++            or bool(self._cfg.get("proto_stats_track", False))
++        )
++        # The z-score path needs per-prototype raw scores, which only come back
++        # via the details dict.
++        want_details = bool(return_details) or stats_enabled
++
+         num_classes = len(states)
+         device = states[0]["centers"].device if num_classes > 0 else images.device
+ 
+@@ -215,10 +241,19 @@ class GaussianPatchLevel(BasePatchLevel):
+ 
+         # ── Compute per-class Gaussian score ──────────────────────────────────
+         raw_proto = torch.zeros(num_classes, device=device)
+-        per_class_details = {}  # c → {best_per_proto, weighted, app_w}
++        per_class_details = {}  # c → {best_per_proto, weighted, app_w, ...}
+         for c in range(num_classes):
+             if states[c]["centers"].shape[0] > 0:
+                 centers_norm = _safe_normalize(states[c]["centers"])
++
++                # Reference distribution for this class's prototypes, built from
++                # every image seen so far — never from the current one.
++                proto_mu = proto_sigma = proto_valid = None
++                if stats_enabled and proto_stats.has_stats(states[c]):
++                    proto_mu, proto_sigma, proto_valid = proto_stats.compute_mu_sigma(
++                        states[c], stats_min_count, stats_sigma_eps
++                    )
++
+                 result = _gaussian_score_for_class(
+                     patches_norm,
+                     centers_norm,
+@@ -229,13 +264,29 @@ class GaussianPatchLevel(BasePatchLevel):
+                     patch_group_threshold=patch_group_threshold,
+                     variance_min=variance_min,
+                     aggregation=aggregation,
+-                    return_details=return_details,
++                    return_details=want_details,
++                    proto_mu=proto_mu,
++                    proto_sigma=proto_sigma,
++                    proto_valid=proto_valid,
++                    sigma_eps=stats_sigma_eps,
+                 )
+-                if return_details:
++                if want_details:
+                     raw_proto[c], per_class_details[c] = result
+                 else:
+                     raw_proto[c] = result
+ 
++        # ── Fold this image into every bank's reference distribution ──────────
++        # Strictly after all scoring above, so no bank's statistics can contain
++        # the image they were just used to score.
++        if stats_enabled:
++            self._accumulate_proto_stats(
++                states, per_class_details,
++                sigma_warn=stats_sigma_warn,
++                min_count=stats_min_count,
++                sigma_eps=stats_sigma_eps,
++                log_every=stats_log_every,
++            )
++
+         # ── Quality gate: how discriminative are the raw prototype scores? ───
+         proto_var = raw_proto.var()
+         quality_gate = proto_var / (proto_var + quality_eps)
+@@ -248,6 +299,50 @@ class GaussianPatchLevel(BasePatchLevel):
+             return raw_proto, quality_gate, details
+         return raw_proto, quality_gate
+ 
++    def _accumulate_proto_stats(self, states, per_class_details, *,
++                                sigma_warn, min_count, sigma_eps, log_every):
++        """Fold one image's raw prototype scores into every bank's statistics.
++
++        Mutates ``states`` in place. Also refreshes ``self.last_stats_diag`` with
++        a health summary — a large ``n_low_var`` means prototypes whose reference
++        distribution is near-degenerate, so their z-scores are dominated by the
++        sigma floor.
++        """
++        n_protos = 0
++        n_valid = 0
++        n_low_var = 0
++        sigma_total = 0.0
++
++        for c, details in per_class_details.items():
++            best_per_proto = details.get("best_per_proto")
++            if best_per_proto is None or best_per_proto.numel() == 0:
++                continue
++            states[c].update(proto_stats.accumulate(states[c], best_per_proto))
++
++            _, sigma, valid = proto_stats.compute_mu_sigma(
++                states[c], min_count, sigma_eps
++            )
++            n_protos += sigma.numel()
++            n_valid += int(valid.sum().item())
++            n_low_var += proto_stats.low_variance_count(sigma, valid, sigma_warn)
++            sigma_total += float(sigma.sum().item())
++
++        self.last_stats_diag = {
++            "n_protos": n_protos,
++            "n_valid": n_valid,
++            "n_low_var": n_low_var,
++            "mean_sigma": sigma_total / max(n_protos, 1),
++        }
++
++        self._stats_calls = getattr(self, "_stats_calls", 0) + 1
++        if log_every > 0 and self._stats_calls % log_every == 0:
++            d = self.last_stats_diag
++            print(
++                f"[proto_stats] call={self._stats_calls} "
++                f"protos={d['n_protos']} valid={d['n_valid']} "
++                f"low_var={d['n_low_var']} mean_sigma={d['mean_sigma']:.5f}"
++            )
++
+     def update_state(self, state, images, encoder, global_feat,
+                      *, filter_scores=None, target_class_idx=None):
+         # ── Config ────────────────────────────────────────────────────────────
+@@ -378,6 +473,13 @@ class GaussianPatchLevel(BasePatchLevel):
+         updated_vars = torch.stack(all_vars, dim=0)
+         updated_apps = torch.tensor(all_apps, device=apps.device, dtype=torch.float)
+ 
++        # Grow the score accumulators to match the new bank size. Freshly created
++        # prototypes start with zero observations and abstain from z-scoring
++        # until they have accumulated proto_stats_min_count reference scores.
++        updated_stats = proto_stats.grow(
++            state, updated_apps.shape[0], updated_centers.device
++        )
++
+         # ── Track top-3 representative patches per cluster ─────────────────────
+         _TOP3 = 5
+         current_image_idx = int(state.get("n_images", 0))
+@@ -447,6 +549,9 @@ class GaussianPatchLevel(BasePatchLevel):
+             updated_centers = updated_centers[keep]
+             updated_vars = updated_vars[keep]
+             updated_apps = updated_apps[keep]
++            # Score statistics must follow the same reindexing, or every
++            # surviving prototype inherits a different prototype's history.
++            updated_stats = proto_stats.permute(updated_stats, keep)
+             keep_list = keep.tolist()
+             new_top_rep = [new_top_rep[k] for k in keep_list]
+ 
+@@ -456,6 +561,7 @@ class GaussianPatchLevel(BasePatchLevel):
+         state["appearance"] = updated_apps
+         state["n_images"] = state["n_images"] + 1
+         state["top_rep_patches"] = new_top_rep
++        state.update(updated_stats)
+         if keep_mask is not None:
+             state["keep_mask"] = keep_mask[:P]
+         else:
+diff --git a/models/patch_modulated_pta.py b/models/patch_modulated_pta.py
+index 8efac46..34fd01b 100644
+--- a/models/patch_modulated_pta.py
++++ b/models/patch_modulated_pta.py
+@@ -131,6 +131,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
+                 "tau_text":          float(_fusion_cfg.get("tau_text", cfg.get("tau_text", 1.0))),
+                 "tau_image_proto":   float(_fusion_cfg.get("tau_image_proto", cfg.get("tau_image_proto", 100.0))),
+                 "tau_patch_proto":   float(_fusion_cfg.get("tau_patch_proto", cfg.get("tau_patch_proto", 20.0))),
++                "patch_squash":       str(_fusion_cfg.get("patch_squash", cfg.get("patch_squash", "none"))),
++                "patch_squash_scale": float(_fusion_cfg.get("patch_squash_scale", cfg.get("patch_squash_scale", 3.0))),
+             }
+         }
+         fusion_cls = FUSION_REGISTRY.get(fusion_type, QualityGatedFusion)
+@@ -314,7 +316,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
+         print(f"---- PatchModulatedPTA FINAL {final_acc:.2f}% ----")
+ 
+         label = os.environ.get("RESULT_LABEL", "PatchModulatedPTA")
+-        with open("outputs/result.txt", "a") as f:
++        result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
++        with open(result_file, "a") as f:
+             f.write(
+                 f"{label}'s performance on {dataset_name}: "
+                 f"Top1- {final_acc:.2f}.\n"
+diff --git a/prototype_score_normalization_and_class_aggregation.md b/prototype_score_normalization_and_class_aggregation.md
+new file mode 100644
+index 0000000..74020aa
+--- /dev/null
++++ b/prototype_score_normalization_and_class_aggregation.md
+@@ -0,0 +1,376 @@
++# Prototype Score Normalization and Class-Level Aggregation
++
++## Objective
++
++Improve class-level classification by:
++
++1. Building a reference score distribution for every prototype.
++2. Converting each prototype's raw similarity score into a prototype-specific z-score.
++3. Aggregating prototype z-scores using the existing appearance weights.
++4. Comparing the resulting class-level scores across classes.
++
++The key motivation is that prototypes are constructed independently for each class, and different prototypes can have different natural score distributions. A raw score of `0.8` may be highly significant for one prototype but relatively ordinary for another.
++
++---
++
++# Step 1: Build a Reference Distribution for Each Prototype
++
++## 1.1 Concept
++
++For every prototype, build a reference distribution of its similarity scores against a set of reference images.
++
++Each prototype must have its own:
++
++- Mean score: `mu`
++- Standard deviation: `sigma`
++
++These statistics are used to normalize future scores for that specific prototype.
++
++For prototype `p_i`:
++
++```text
++reference_scores_i = [
++    score(p_i, image_1),
++    score(p_i, image_2),
++    ...
++    score(p_i, image_N)
++]
++```
++
++Compute:
++
++```text
++mu_i = mean(reference_scores_i)
++sigma_i = std(reference_scores_i)
++```
++
++Store these values with the prototype.
++
++Conceptually:
++
++```text
++Prototype A1
++    mean = 0.50
++    std  = 0.10
++
++Prototype A2
++    mean = 0.70
++    std  = 0.05
++
++Prototype B1
++    mean = 0.40
++    std  = 0.15
++```
++
++Each prototype therefore has its own score baseline.
++
++---
++
++## 1.2 Reference Images
++
++The reference distribution should be generated using the same scoring pipeline that produces the per-prototype score for a new/current image.
++
++For each class:
++
++```text
++Class A
++    Prototype A1
++    Prototype A2
++    Prototype A3
++    ...
++
++Class B
++    Prototype B1
++    Prototype B2
++    Prototype B3
++    ...
++```
++
++For every prototype, calculate its score against the selected reference images.
++
++The reference set should be fixed and deterministic for reproducibility.
++
++### Important
++
++Do not use the current test/query image when calculating the prototype's `mu` and `sigma`.
++
++If evaluating on a dataset, avoid data leakage. The reference statistics should be computed from the appropriate training/reference split rather than from the test image itself.
++
++---
++
++## 1.3 Z-Score Calculation
++
++When a new/current image is evaluated, first calculate the existing raw similarity score for each prototype:
++
++```text
++raw_score_i
++```
++
++Then normalize it using that prototype's stored reference statistics:
++
++```text
++z_i = (raw_score_i - mu_i) / sigma_i
++```
++
++The z-score represents how unusually high or low the current image's score is for that particular prototype.
++
++Example:
++
++```text
++Prototype A1:
++    mu    = 0.50
++    sigma = 0.10
++    current raw score = 0.80
++
++z_A1 = (0.80 - 0.50) / 0.10
++     = 3.0
++```
++
++Another prototype may have:
++
++```text
++Prototype A2:
++    mu    = 0.70
++    sigma = 0.05
++    current raw score = 0.75
++
++z_A2 = (0.75 - 0.70) / 0.05
++     = 1.0
++```
++
++Although `0.80` and `0.75` are both high raw scores, the first score provides stronger evidence relative to its prototype's normal score distribution.
++
++---
++
++## 1.4 Numerical Stability
++
++Handle prototypes with extremely small or zero standard deviation.
++
++Use:
++
++```text
++sigma_safe = max(sigma_i, epsilon)
++```
++
++Then:
++
++```text
++z_i = (raw_score_i - mu_i) / sigma_safe
++```
++
++Choose an appropriate small epsilon consistent with the existing codebase.
++
++The implementation should also detect and log prototypes with near-zero variance, since this may indicate insufficient reference samples or a prototype whose similarity score is nearly constant.
++
++---
++
++# Step 2: Aggregate Prototype Z-Scores Using Appearance Weights
++
++## 2.1 Concept
++
++Each class contains a different number of prototypes.
++
++Each prototype already has an appearance weight representing how frequently or strongly that prototype's appearance is represented.
++
++Use these appearance weights to aggregate the prototype-level z-scores into one class-level score.
++
++For class `c`, let:
++
++```text
++z_c,i = z-score for prototype i
++w_c,i = appearance weight for prototype i
++```
++
++Normalize the appearance weights within each class:
++
++```text
++w_normalized_c,i = w_c,i / sum_j(w_c,j)
++```
++
++Then calculate the class score:
++
++```text
++class_score_c =
++    sum_i(
++        w_normalized_c,i * z_c,i
++    )
++```
++
++Equivalently:
++
++```text
++class_score_c =
++    Σ_i [ w_normalized_c,i * z_c,i ]
++```
++
++This is the weighted mean z-score for the class.
++
++---
++
++## 2.2 Example
++
++Suppose Class A has three prototypes:
++
++```text
++Prototype    z-score    appearance weight
++A1           3.0        0.5
++A2           1.0        0.3
++A3          -1.0        0.2
++```
++
++The weights already sum to 1:
++
++```text
++Class A score =
++    (0.5 * 3.0)
++  + (0.3 * 1.0)
++  + (0.2 * -1.0)
++
++= 1.6
++```
++
++Suppose Class B produces:
++
++```text
++Class B score = 0.8
++```
++
++Then:
++
++```text
++Class A = 1.6
++Class B = 0.8
++```
++
++Therefore:
++
++```text
++prediction = Class A
++```
++
++---
++
++# Final Classification Pipeline
++
++The complete pipeline should be:
++
++```text
++                    PROTOTYPE CONSTRUCTION
++                            │
++                            ▼
++              Build prototypes independently
++                    for each class
++                            │
++                            ▼
++              For every prototype, calculate
++              reference score distribution
++                    │
++                    ├── mean (mu_i)
++                    └── std  (sigma_i)
++                            │
++                            ▼
++                 Store prototype statistics
++                            │
++                            │
++                     NEW CURRENT IMAGE
++                            │
++                            ▼
++               Calculate raw score against
++                    every prototype
++                            │
++                            ▼
++             Convert each raw score to a
++                prototype-specific z-score
++                            │
++                            ▼
++              Apply normalized appearance
++                     weights within class
++                            │
++                            ▼
++             Weighted mean z-score per class
++                            │
++                            ▼
++               Compare class-level scores
++                            │
++                            ▼
++                   argmax(class_score)
++                            │
++                            ▼
++                      PREDICTED CLASS
++```
++
++## Classification Formula
++
++For each class `c`:
++
++```text
++z_c,i = (raw_score_c,i - mu_c,i) / sigma_c,i
++```
++
++Normalize appearance weights:
++
++```text
++w'_c,i = w_c,i / Σ_j w_c,j
++```
++
++Compute class score:
++
++```text
++S_c = Σ_i (w'_c,i * z_c,i)
++```
++
++Predict:
++
++```text
++predicted_class = argmax_c(S_c)
++```
++
++---
++
++# Implementation Requirements
++
++1. Preserve the existing per-prototype raw scoring mechanism.
++2. Preserve the existing prototype appearance weighting mechanism.
++3. Add persistent `mean` and `std` statistics for every prototype.
++4. Calculate reference statistics separately for every prototype.
++5. Calculate z-scores independently for every prototype.
++6. Normalize appearance weights independently within each class.
++7. Aggregate normalized appearance-weighted z-scores into one score per class.
++8. Predict the class with the highest aggregated score.
++9. Ensure the reference statistics do not include the current test/query image.
++10. Handle zero or near-zero standard deviation safely using an epsilon.
++11. Keep the raw prototype scores available for debugging and analysis.
++12. Also expose the per-prototype z-scores and final class scores so that the new aggregation method can be evaluated against the existing raw-score aggregation.
++
++## Expected Output for Debugging
++
++For each classification, provide or log:
++
++```text
++Class A
++    Prototype A1:
++        raw_score
++        mu
++        sigma
++        z_score
++        appearance_weight
++        normalized_weight
++
++    Prototype A2:
++        ...
++
++    final_class_score
++
++Class B
++    ...
++
++Predicted class
++```
++
++This will allow direct comparison between:
++
++- raw prototype scores
++- normalized z-scores
++- appearance weights
++- final class-level scores
++- predicted class
+diff --git a/scripts/slurm_proto_zscore.sh b/scripts/slurm_proto_zscore.sh
+new file mode 100644
+index 0000000..39771e9
+--- /dev/null
++++ b/scripts/slurm_proto_zscore.sh
+@@ -0,0 +1,182 @@
++#!/bin/bash
++#SBATCH --job-name=pta_proto_zscore
++#SBATCH --partition=gpu
++#SBATCH --nodes=1
++#SBATCH --ntasks-per-node=1
++#SBATCH --cpus-per-task=4
++#SBATCH --mem=16G
++#SBATCH --gpus-per-node=1
++#SBATCH --time=5:00:00
++#SBATCH --array=0-44
++#SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.out
++#SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.err
++
++# ============================================================================
++# Prototype Score Normalization (z-score) Sweep
++#
++# Compares raw prototype-score aggregation against per-prototype z-score
++# normalization in two settings:
++#
++#   Setting 2  diagnostic_pta + fusion.mode=patch_only
++#              final_logits ARE the patch scores, so the comparison is a pure
++#              argmax over aggregated prototype scores — scale-invariant, no tau
++#              to tune. This is the cleanest read on whether z-scoring helps.
++#
++#   Setting 1  patch_modulated_pta
++#              patch scores enter a linear fusion as
++#                  tau_patch_proto * proto_alpha * patch_logits
++#              tau=20 was tuned for raw Gaussian scores in [0, 1]; z-scores are
++#              unbounded (~[-3, +10]), so tau is swept and a bounded tanh
++#              variant is included.
++#
++# CAVEAT (not swept here): quality_gate = var / (var + quality_eps) with
++# quality_eps=1e-3 was also tuned for [0,1] scores and saturates to ~1.0 on the
++# z scale. Harmless for ProtoAlphaFusion (the configured default, which ignores
++# the gate), but it also modulates the image-level EMA in patch_modulated_pta
++# via quality_modulation. Worth a follow-up sweep on patch_level.quality_eps.
++#
++# HOW TO USE
++# ----------
++# 1. Set CLIP_MODEL / EXTRA_OVERRIDES below.
++# 2. Update --array to match N_EXP x N_DS (currently 9 x 5 = 45 → 0-44).
++# 3. sbatch scripts/slurm_proto_zscore.sh
++#
++# Task mapping:
++#   exp_idx = SLURM_ARRAY_TASK_ID / N_DS
++#   ds_idx  = SLURM_ARRAY_TASK_ID % N_DS
++# ============================================================================
++
++set -euo pipefail
++
++HOME_DIR=/share_98/projects/$USER
++PROJECT_DIR=$HOME_DIR/repos/pta
++
++cd "$PROJECT_DIR"
++
++mkdir -p outputs
++mkdir -p logs
++
++source /shared/miniconda3/etc/profile.d/conda.sh
++conda activate "$HOME_DIR/envs/pta"
++
++export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
++export CUBLAS_WORKSPACE_CONFIG=:4096:8
++
++# ---------------------------------------------------------------------------
++# Configuration
++# ---------------------------------------------------------------------------
++CLIP_MODEL=clip_surgery
++EXTRA_OVERRIDES=""
++
++# Examples:
++# EXTRA_OVERRIDES="patch_level.patch_filter_mode=surgery_with_labels"
++# EXTRA_OVERRIDES="patch_level.proto_stats_log_every=500"
++
++# ---------------------------------------------------------------------------
++# Datasets — the 5-dataset cross-domain core
++# ---------------------------------------------------------------------------
++DATASETS=(dtd eurosat fgvc oxford_flowers oxford_pets)
++N_DS=${#DATASETS[@]}
++
++# ---------------------------------------------------------------------------
++# Experiment registry
++# exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL OVERRIDE
++# ---------------------------------------------------------------------------
++_METHODS=()
++_CONFIG_DIRS=()
++_CLIP_MODELS=()
++_CLIP_CHECKPOINTS=()
++_EXP_LABELS=()
++_OVERRIDES=()
++
++exp() {
++    _METHODS+=("$1")
++    _CONFIG_DIRS+=("$2")
++    _CLIP_MODELS+=("$3")
++    _CLIP_CHECKPOINTS+=("$4")
++    _EXP_LABELS+=("$5")
++    _OVERRIDES+=("$6")
++}
++
++# ── Setting 2: diagnostic_pta, patch_only (scale-invariant argmax) ──────────
++exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Raw-WeightedMean" \
++    "fusion.mode=patch_only patch_level.aggregation=weighted_mean $EXTRA_OVERRIDES"
++exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-WeightedMean" \
++    "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean $EXTRA_OVERRIDES"
++exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-WeightedMean-MinC20" \
++    "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean patch_level.proto_stats_min_count=20 $EXTRA_OVERRIDES"
++
++# ── Setting 1: patch_modulated_pta (z enters a linear fusion) ───────────────
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Raw-TopM" \
++    "$EXTRA_OVERRIDES"
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau0.5" \
++    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=0.5 $EXTRA_OVERRIDES"
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau1" \
++    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=1.0 $EXTRA_OVERRIDES"
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau2" \
++    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=2.0 $EXTRA_OVERRIDES"
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau5" \
++    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=5.0 $EXTRA_OVERRIDES"
++exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tanh-Tau20" \
++    "patch_level.aggregation=zscore_weighted_mean fusion.patch_squash=tanh fusion.tau_patch_proto=20.0 $EXTRA_OVERRIDES"
++
++# ---------------------------------------------------------------------------
++# Derived values
++# ---------------------------------------------------------------------------
++METHODS=("${_METHODS[@]}")
++CONFIG_DIRS=("${_CONFIG_DIRS[@]}")
++CLIP_MODELS=("${_CLIP_MODELS[@]}")
++CLIP_CHECKPOINTS=("${_CLIP_CHECKPOINTS[@]}")
++EXP_LABELS=("${_EXP_LABELS[@]}")
++OVERRIDES=("${_OVERRIDES[@]}")
++
++N_EXP=${#METHODS[@]}
++N_TOTAL=$((N_EXP * N_DS))
++
++if (( N_EXP == 0 )); then
++    echo "ERROR: No experiments enabled. Uncomment at least one exp() line above."
++    exit 1
++fi
++
++if (( SLURM_ARRAY_TASK_ID >= N_TOTAL )); then
++    echo "SKIP: task $SLURM_ARRAY_TASK_ID >= N_TOTAL ($N_TOTAL). Nothing to do."
++    exit 0
++fi
++
++exp_idx=$((SLURM_ARRAY_TASK_ID / N_DS))
++ds_idx=$((SLURM_ARRAY_TASK_ID % N_DS))
++
++METHOD=${METHODS[$exp_idx]}
++CONFIG=${CONFIG_DIRS[$exp_idx]}
++CLIP_CKPT=${CLIP_CHECKPOINTS[$exp_idx]}
++DATASET=${DATASETS[$ds_idx]}
++EXP_LABEL=${EXP_LABELS[$exp_idx]}
++
++echo "========================================================================"
++echo "  Task ID    : $SLURM_ARRAY_TASK_ID / $SLURM_ARRAY_TASK_MAX"
++echo "  Experiment : $EXP_LABEL ($exp_idx / $N_EXP)"
++echo "  Method     : $METHOD"
++echo "  Config     : $CONFIG"
++echo "  CLIP model : $CLIP_MODEL"
++echo "  Dataset    : $DATASET  (ds_idx=$ds_idx)"
++echo "  Node       : $(hostname)"
++echo "========================================================================"
++
++export RESULT_LABEL="${EXP_LABEL}"
++export RESULT_FILE="outputs/proto_zscore_results.txt"
++
++CMD=(python -u runner.py
++    --method "$METHOD"
++    --config "$CONFIG"
++    --clip-model "$CLIP_MODEL"
++    --datasets "$DATASET"
++    --backbone ViT-B/16)
++
++if [[ -n "$CLIP_CKPT" ]]; then
++    CMD+=(--clip-checkpoint "$CLIP_CKPT")
++fi
++
++OVERRIDE=${_OVERRIDES[$exp_idx]}
++if [[ -n "$OVERRIDE" ]]; then CMD+=(--override $OVERRIDE); fi
++
++"${CMD[@]}"
+diff --git a/tests/debug_gaussian_patch.py b/tests/debug_gaussian_patch.py
+index dc2390d..33bb976 100644
+--- a/tests/debug_gaussian_patch.py
++++ b/tests/debug_gaussian_patch.py
+@@ -407,7 +407,16 @@ def _save_step_figure(
+                 details = proto_details[0]
+                 best_per_proto = details["best_per_proto"].cpu().numpy()  # [K]
+                 weighted = details["weighted"].cpu().numpy()              # [K]
+-                score_str = f"s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
++                if "z" in details:
++                    mu_np = details["mu"].cpu().numpy()
++                    sigma_np = details["sigma"].cpu().numpy()
++                    z_np = details["z"].cpu().numpy()
++                    score_str = (
++                        f"s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
++                        f"σ={sigma_np[k]:.3f} z={z_np[k]:+.2f} → w={weighted[k]:.4f}"
++                    )
++                else:
++                    score_str = f"s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
+                 ax1.text(
+                     1.005, 1 - y_frac,
+                     score_str,
+@@ -501,12 +510,20 @@ def _build_cfg(args, filter_mode: str) -> dict:
+             "variance_max":                 1.0,
+             "aug_copies":                   0,   # handle augmentation in outer loop
+             "exclude_pos":                  False,
+-            "soft_nn_top_m":                4,
++            "soft_nn_top_m":                args.top_m,
+             "quality_eps":                  1e-3,
+             "patch_group_threshold":        0.9,
+-            "aggregation":                  "weighted_mean",
++            "aggregation":                  args.aggregation,
+             "patch_filter_mode":            filter_mode,
+             "patch_filter_threshold":       args.filter_threshold,
++            # Reference-distribution statistics. min_count defaults far below the
++            # production value because this script only walks a handful of
++            # images — at the production default every prototype would still be
++            # in warm-up and every z-score would be 0.
++            "proto_stats_min_count":        args.proto_stats_min_count,
++            "proto_stats_sigma_eps":        1e-6,
++            "proto_stats_sigma_warn":       1e-4,
++            "proto_stats_log_every":        0,
+         }
+     }
+ 
+@@ -540,6 +557,54 @@ def _load_tensors(args, encoder, device) -> list:
+ 
+ # ── Main run loop for one filter mode ────────────────────────────────────────
+ 
++def _print_proto_table(proto_details: dict, raw_proto, class_names: list):
++    """Print the per-prototype breakdown behind each class-level score.
++
++    For every class with a non-empty bank, one row per prototype showing the raw
++    score, its reference statistics, the resulting z-score, and both the raw and
++    normalised appearance weights — then the class score and the prediction.
++    Lets raw-score aggregation and z-score aggregation be compared side by side.
++    """
++    # compute_patch_logits also stuffs "keep_mask" / "filter_scores" into the
++    # details dict when a patch filter is active, so select the integer class
++    # keys before sorting.
++    class_details = {c: d for c, d in proto_details.items()
++                     if isinstance(c, int) and isinstance(d, dict)}
++    has_z = any("z" in d for d in class_details.values())
++
++    for c, det in sorted(class_details.items()):
++        bpp = det["best_per_proto"].cpu().numpy()
++        if bpp.size == 0:
++            continue
++        apw = det["app_w"].cpu().numpy()
++        wgt = det["weighted"].cpu().numpy()
++        mu = det["mu"].cpu().numpy() if "mu" in det else None
++        sigma = det["sigma"].cpu().numpy() if "sigma" in det else None
++        z = det["z"].cpu().numpy() if "z" in det else None
++        w_norm = det["w_norm"].cpu().numpy() if "w_norm" in det else None
++
++        name = class_names[c] if c < len(class_names) else f"class_{c}"
++        print(f"    class {c} ({name}):")
++        if has_z and z is not None:
++            print("      proto |  raw_score |      mu |   sigma |  z_score |  app_w | norm_w")
++            for k in range(bpp.shape[0]):
++                print(
++                    f"      {k:5d} | {bpp[k]:10.6f} | {mu[k]:7.4f} | {sigma[k]:7.4f} | "
++                    f"{z[k]:8.3f} | {apw[k]:6.3f} | {w_norm[k]:6.3f}"
++                )
++        else:
++            print("      proto |  raw_score |  app_w | weighted")
++            for k in range(bpp.shape[0]):
++                print(
++                    f"      {k:5d} | {bpp[k]:10.6f} | {apw[k]:6.3f} | {wgt[k]:10.6f}"
++                )
++        print(f"      final_class_score = {float(raw_proto[c]):.6f}")
++
++    pred = int(raw_proto.argmax())
++    pred_name = class_names[pred] if pred < len(class_names) else f"class_{pred}"
++    print(f"    predicted class = {pred} ({pred_name})")
++
++
+ def _run_mode(
+     filter_mode: str,
+     tensors: list,
+@@ -604,15 +669,7 @@ def _run_mode(
+             f"  [{filter_mode}] step={i:02d}  K={K:3d}  "
+             f"quality_gate={qg:.4f}  best_proto_logit={best_logit:.4f}"
+         )
+-        # DEBUG: print proto_details summary for target class (index 0)
+-        if 0 in proto_details:
+-            det = proto_details[0]
+-            bpp = det["best_per_proto"].cpu().numpy()
+-            wgt = det["weighted"].cpu().numpy()
+-            apw = det["app_w"].cpu().numpy()
+-            # print(f"    [DEBUG debug_gaussian_patch] class=0  best_per_proto=[{', '.join(f'{v:.6f}' for v in bpp)}]")
+-            # print(f"    [DEBUG debug_gaussian_patch] class=0  weighted=[{', '.join(f'{v:.6f}' for v in wgt)}]")
+-            # print(f"    [DEBUG debug_gaussian_patch] class=0  app_w=[{', '.join(f'{v:.6f}' for v in apw)}]")
++        _print_proto_table(proto_details, raw_proto, class_names)
+ 
+         # ── Save per-step figure ──────────────────────────────────────────────
+         path = _save_step_figure(
+@@ -695,6 +752,19 @@ def parse_args():
+     p.add_argument("--match-threshold",     type=float, default=0.60)
+     p.add_argument("--max-k",               type=int,   default=20,
+                    help="Max clusters per class (default: 20).")
++    p.add_argument("--aggregation",         default="weighted_mean",
++                   choices=["top_m_mean", "max", "sum", "mean",
++                            "top_m_mean_plus_mean", "weighted_mean",
++                            "zscore_weighted_mean", "zscore_top_m_mean"],
++                   help="Prototype-score aggregation (default: weighted_mean). "
++                        "The zscore_* variants normalise each prototype against "
++                        "its own reference distribution before aggregating.")
++    p.add_argument("--top-m",               type=int,   default=4,
++                   help="M for the top_m_* aggregations (default: 4).")
++    p.add_argument("--proto-stats-min-count", type=int, default=2,
++                   help="Reference observations before a prototype's z-score is "
++                        "trusted (default: 2, vs 10 in production configs — this "
++                        "script only walks a few images).")
+     p.add_argument("--filter-threshold",    type=float, default=0.5,
+                    help="Threshold on normalised [0,1] score for patch filtering (default: 0.5).")
+     p.add_argument("--seed",                type=int,   default=42,
+diff --git a/utils/kmeans.py b/utils/kmeans.py
+index 7603410..122d6c2 100644
+--- a/utils/kmeans.py
++++ b/utils/kmeans.py
+@@ -3,11 +3,12 @@
+ These functions are used exclusively by GaussianPatchLevel and the proto_viz
+ tool — they are not general-purpose utilities.
+ """
+-from typing import List, Tuple
++from typing import List, Optional, Tuple
+ 
+ import torch
+ 
+ from utils.clip_inference import _safe_normalize
++from utils.proto_stats import zscore as _zscore
+ 
+ 
+ def _incremental_kmeans_step(
+@@ -125,6 +126,10 @@ def _gaussian_score_for_class(
+     variance_min: float = 0.001,
+     aggregation: str = "top_m_mean",
+     return_details: bool = False,
++    proto_mu: Optional[torch.Tensor] = None,
++    proto_sigma: Optional[torch.Tensor] = None,
++    proto_valid: Optional[torch.Tensor] = None,
++    sigma_eps: float = 1e-6,
+ ) -> torch.Tensor:
+     """
+     Score one class using Gaussian prototype similarity.
+@@ -134,11 +139,27 @@ def _gaussian_score_for_class(
+ 
+     Then apply one-to-one assignment (same as MPTA) and top-M aggregation.
+ 
++    The ``zscore_*`` aggregations first normalize each prototype's raw score
++    against that prototype's own reference distribution (``proto_mu`` /
++    ``proto_sigma``, maintained online by utils.proto_stats), so that scores from
++    prototypes with different natural score ranges become comparable. They
++    require ``proto_mu``/``proto_sigma``/``proto_valid``; without them the call
++    falls back to the raw-score path.
++
+     Returns a scalar score for this class.
+     """
+     num_input_patches = patches_norm.shape[0]
+     if num_input_patches == 0 or centers_norm.shape[0] == 0:
+-        return torch.tensor(0.0, device=centers_norm.device)
++        empty = torch.tensor(0.0, device=centers_norm.device)
++        if return_details:
++            K0 = centers_norm.shape[0]
++            zeros = torch.zeros(K0, device=centers_norm.device)
++            return empty, {
++                "best_per_proto": zeros,
++                "weighted": zeros.clone(),
++                "app_w": zeros.clone(),
++            }
++        return empty
+ 
+     K = centers_norm.shape[0]
+ 
+@@ -209,7 +230,43 @@ def _gaussian_score_for_class(
+ 
+     k = min(top_m, weighted.numel())
+     if k <= 0:
+-        return torch.tensor(0.0, device=gaussian_scores.device)
++        empty = torch.tensor(0.0, device=gaussian_scores.device)
++        if return_details:
++            return empty, {
++                "best_per_proto": best_per_proto,
++                "weighted": weighted,
++                "app_w": app_w,
++            }
++        return empty
++
++    # ── Z-score normalization (optional) ───────────────────────────────────
++    # Convert each prototype's raw score into a prototype-specific z-score, then
++    # aggregate with appearance weights normalized to sum to 1 within the class.
++    # This makes class scores comparable even when classes hold different
++    # numbers of prototypes with different natural score ranges.
++    z = None
++    w_norm = None
++    if aggregation.startswith("zscore") and proto_mu is not None:
++        z = _zscore(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
++        w_norm = app_w / app_w.sum().clamp(min=1e-6)
++        z_weighted = w_norm * z  # [K]
++
++        if aggregation == "zscore_top_m_mean":
++            score = z_weighted.topk(k).values.mean()
++        else:  # "zscore_weighted_mean" — the weighted mean z-score
++            score = z_weighted.sum()
++
++        if return_details:
++            return score, {
++                "best_per_proto": best_per_proto,  # [K] raw score, kept for comparison
++                "weighted": z_weighted,            # [K] normalized-weight × z
++                "app_w": app_w,                    # [K] raw appearance weights
++                "mu": proto_mu,                    # [K] reference mean
++                "sigma": proto_sigma,              # [K] reference std
++                "z": z,                            # [K] prototype-specific z-score
++                "w_norm": w_norm,                  # [K] appearance weights, sum to 1
++            }
++        return score
+ 
+     if aggregation == "top_m_mean":
+         score = weighted.topk(k).values.mean()
+diff --git a/utils/proto_stats.py b/utils/proto_stats.py
+new file mode 100644
+index 0000000..04ef2a2
+--- /dev/null
++++ b/utils/proto_stats.py
+@@ -0,0 +1,183 @@
++"""Per-prototype running score statistics for z-score normalization.
++
++Prototypes are built independently per class, so each one has its own natural
++score distribution: a Gaussian score of 0.8 may be routine for a permissive
++prototype and exceptional for a picky one. These helpers maintain a reference
++distribution per prototype so raw scores can be converted to prototype-specific
++z-scores before class-level aggregation.
++
++The reference distribution is built **online** from the test stream. There is no
++train split in this codebase (every dataset exposes only `test`), so the caller
++scores an image against the statistics accumulated from *previously seen* images
++and only afterwards folds that image's scores in. The current query image is
++therefore never part of its own mu/sigma.
++
++State is three parallel ``[K]`` tensors held alongside ``appearance`` in each
++class's prototype bank. They must be grown and permuted in lockstep with
++``centers`` / ``variance`` / ``appearance`` — see :func:`grow` and
++:func:`permute`.
++
++Used exclusively by GaussianPatchLevel and _gaussian_score_for_class.
++"""
++from typing import Dict, Tuple
++
++import torch
++
++
++# Keys used in the per-class state dict. Kept together so callers can iterate.
++STAT_KEYS = ("score_count", "score_sum", "score_sqsum")
++
++
++def init_stats(K: int, device) -> Dict[str, torch.Tensor]:
++    """Create empty running-statistic accumulators for a bank of K prototypes."""
++    return {key: torch.zeros(K, device=device) for key in STAT_KEYS}
++
++
++def has_stats(state: dict) -> bool:
++    """True if *state* already carries accumulators (banks created before this
++    feature existed, or restored from an old checkpoint, will not)."""
++    return all(key in state for key in STAT_KEYS)
++
++
++def accumulate(
++    state: dict,
++    best_per_proto: torch.Tensor,
++) -> Dict[str, torch.Tensor]:
++    """Fold one image's raw prototype scores into the running statistics.
++
++    Call this **after** the image has been scored, never before — that ordering
++    is what keeps the query image out of its own reference distribution.
++
++    Args:
++        state:          per-class bank dict holding the three accumulators.
++        best_per_proto: ``[K]`` raw score of every prototype against this image.
++                        Prototypes that won no patch group score exactly 0.0 and
++                        are included deliberately: a prototype that usually fires
++                        but is absent now is evidence against the class.
++
++    Returns:
++        Dict of the three updated ``[K]`` tensors (new tensors, not in-place).
++    """
++    scores = best_per_proto.detach().float()
++    K = scores.shape[0]
++    device = scores.device
++
++    count = state.get("score_count")
++    if count is None or count.shape[0] != K:
++        # Bank was resized without the accumulators following along, or this is
++        # a legacy state dict. Restart from zero rather than mis-attributing
++        # statistics to the wrong prototypes.
++        stats = init_stats(K, device)
++        count = stats["score_count"]
++        total = stats["score_sum"]
++        sq_total = stats["score_sqsum"]
++    else:
++        total = state["score_sum"]
++        sq_total = state["score_sqsum"]
++
++    return {
++        "score_count": count + 1.0,
++        "score_sum": total + scores,
++        "score_sqsum": sq_total + scores.pow(2),
++    }
++
++
++def compute_mu_sigma(
++    state: dict,
++    min_count: int,
++    sigma_eps: float = 1e-6,
++) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """Derive per-prototype mean, standard deviation and validity mask.
++
++    Args:
++        state:      per-class bank dict holding the three accumulators.
++        min_count:  a prototype needs this many reference observations before its
++                    z-score is trusted. Below it the prototype abstains.
++        sigma_eps:  floor applied to sigma by :func:`zscore`; used here only to
++                    keep the returned sigma strictly positive.
++
++    Returns:
++        ``(mu, sigma, valid)`` — each ``[K]``; *valid* is bool.
++    """
++    count = state["score_count"]
++    total = state["score_sum"]
++    sq_total = state["score_sqsum"]
++
++    safe_count = count.clamp(min=1.0)
++    mu = total / safe_count
++
++    # Population variance, then Bessel-corrected to the sample variance wherever
++    # we have at least two observations. clamp(min=0) guards the catastrophic
++    # cancellation that E[x²] - E[x]² suffers when the scores are near-constant.
++    var_pop = (sq_total / safe_count - mu.pow(2)).clamp(min=0.0)
++    bessel = torch.where(count > 1.0, count / (count - 1.0).clamp(min=1.0),
++                         torch.ones_like(count))
++    sigma = (var_pop * bessel).sqrt().clamp(min=sigma_eps)
++
++    valid = count >= float(min_count)
++    return mu, sigma, valid
++
++
++def zscore(
++    raw: torch.Tensor,
++    mu: torch.Tensor,
++    sigma: torch.Tensor,
++    valid: torch.Tensor,
++    sigma_eps: float = 1e-6,
++) -> torch.Tensor:
++    """Convert raw prototype scores to prototype-specific z-scores.
++
++    ``z_i = (raw_i - mu_i) / max(sigma_i, eps)``
++
++    Prototypes without enough reference observations abstain at 0.0 (the
++    "typical" value on the z scale) rather than contributing noise.
++    """
++    z = (raw - mu) / sigma.clamp(min=sigma_eps)
++    return torch.where(valid, z, torch.zeros_like(z))
++
++
++def grow(state: dict, new_K: int, device) -> Dict[str, torch.Tensor]:
++    """Resize accumulators to a bank that has grown to *new_K* prototypes.
++
++    Existing entries keep their history; freshly created prototypes start with
++    zero observations, so they abstain until they have accumulated ``min_count``
++    reference scores.
++    """
++    if not has_stats(state):
++        # Legacy/uninitialised bank: start every prototype from zero.
++        return init_stats(new_K, device)
++
++    current_K = state[STAT_KEYS[0]].shape[0]
++    if current_K == new_K:
++        return {key: state[key] for key in STAT_KEYS}
++    if current_K > new_K:
++        # Bank shrank without going through permute(); we cannot tell which
++        # prototypes survived, so drop the history rather than misattribute it.
++        return init_stats(new_K, device)
++
++    pad = torch.zeros(new_K - current_K, device=device)
++    return {key: torch.cat([state[key], pad], dim=0) for key in STAT_KEYS}
++
++
++def permute(stats: Dict[str, torch.Tensor], keep_idx: torch.Tensor) -> Dict[str, torch.Tensor]:
++    """Reindex accumulators to follow a prune/reorder of the prototype bank.
++
++    Must be applied wherever ``centers`` / ``variance`` / ``appearance`` are
++    reindexed; skipping it silently attaches every prototype's statistics to a
++    different prototype.
++    """
++    return {key: stats[key][keep_idx] for key in STAT_KEYS}
++
++
++def low_variance_count(
++    sigma: torch.Tensor,
++    valid: torch.Tensor,
++    sigma_warn: float,
++) -> int:
++    """Number of prototypes whose reference distribution is near-degenerate.
++
++    A high count means either too few reference samples or a prototype whose
++    score is nearly constant — in both cases its z-scores are unreliable and
++    dominated by the sigma floor.
++    """
++    return int((valid & (sigma < sigma_warn)).sum().item())

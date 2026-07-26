@@ -131,6 +131,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 "tau_text":          float(_fusion_cfg.get("tau_text", cfg.get("tau_text", 1.0))),
                 "tau_image_proto":   float(_fusion_cfg.get("tau_image_proto", cfg.get("tau_image_proto", 100.0))),
                 "tau_patch_proto":   float(_fusion_cfg.get("tau_patch_proto", cfg.get("tau_patch_proto", 20.0))),
+                "patch_squash":       str(_fusion_cfg.get("patch_squash", cfg.get("patch_squash", "none"))),
+                "patch_squash_scale": float(_fusion_cfg.get("patch_squash_scale", cfg.get("patch_squash_scale", 3.0))),
             }
         }
         fusion_cls = FUSION_REGISTRY.get(fusion_type, QualityGatedFusion)
@@ -314,7 +316,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         print(f"---- PatchModulatedPTA FINAL {final_acc:.2f}% ----")
 
         label = os.environ.get("RESULT_LABEL", "PatchModulatedPTA")
-        with open("outputs/result.txt", "a") as f:
+        result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
+        with open(result_file, "a") as f:
             f.write(
                 f"{label}'s performance on {dataset_name}: "
                 f"Top1- {final_acc:.2f}.\n"

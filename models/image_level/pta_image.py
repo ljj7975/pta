@@ -55,7 +55,6 @@ class PTAImageLevel(BaseImageLevel):
         alpha = self._cfg.get("alpha", 0.01)
         T = float(self._cfg.get("T", 20.0))
 
-        # Softmax probabilities ─────────────────────────────────────────
         probs = F.softmax(clip_logits, dim=-1)          # (1, C)
 
         # Squeeze batch dimension for per-class processing

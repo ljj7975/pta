@@ -22,7 +22,18 @@ patch_level:
   gaussian_ema: 0.1
   variance_min: 0.001
   variance_max: 1.0
+  # Per-prototype score normalization. Active when `aggregation` is a zscore_*
+  # variant (zscore_weighted_mean | zscore_top_m_mean), or when tracking is
+  # forced on for diagnostics. `aggregation` itself is left unset here so the
+  # code default (top_m_mean) keeps existing runs unchanged.
+  proto_stats_track: false      # accumulate stats even on raw-score aggregations
+  proto_stats_min_count: 10     # reference observations before a prototype's z is trusted
+  proto_stats_sigma_eps: 1.0e-6 # floor on sigma when dividing
+  proto_stats_sigma_warn: 1.0e-4 # below this sigma a prototype is flagged near-degenerate
+  proto_stats_log_every: 0      # print a stats health line every N images (0 = off)
 
 fusion:
   type: ProtoAlphaFusion
   tau_text: 1.0
+  patch_squash: none            # none | tanh — bound the patch term before fusion
+  patch_squash_scale: 3.0       # tanh(patch_logits / scale)

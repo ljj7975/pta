@@ -407,7 +407,16 @@ def _save_step_figure(
                 details = proto_details[0]
                 best_per_proto = details["best_per_proto"].cpu().numpy()  # [K]
                 weighted = details["weighted"].cpu().numpy()              # [K]
-                score_str = f"s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
+                if "z" in details:
+                    mu_np = details["mu"].cpu().numpy()
+                    sigma_np = details["sigma"].cpu().numpy()
+                    z_np = details["z"].cpu().numpy()
+                    score_str = (
+                        f"s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
+                        f"σ={sigma_np[k]:.3f} z={z_np[k]:+.2f} → w={weighted[k]:.4f}"
+                    )
+                else:
+                    score_str = f"s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
                 ax1.text(
                     1.005, 1 - y_frac,
                     score_str,
@@ -501,12 +510,20 @@ def _build_cfg(args, filter_mode: str) -> dict:
             "variance_max":                 1.0,
             "aug_copies":                   0,   # handle augmentation in outer loop
             "exclude_pos":                  False,
-            "soft_nn_top_m":                4,
+            "soft_nn_top_m":                args.top_m,
             "quality_eps":                  1e-3,
             "patch_group_threshold":        0.9,
-            "aggregation":                  "weighted_mean",
+            "aggregation":                  args.aggregation,
             "patch_filter_mode":            filter_mode,
             "patch_filter_threshold":       args.filter_threshold,
+            # Reference-distribution statistics. min_count defaults far below the
+            # production value because this script only walks a handful of
+            # images — at the production default every prototype would still be
+            # in warm-up and every z-score would be 0.
+            "proto_stats_min_count":        args.proto_stats_min_count,
+            "proto_stats_sigma_eps":        1e-6,
+            "proto_stats_sigma_warn":       1e-4,
+            "proto_stats_log_every":        0,
         }
     }
 
@@ -539,6 +556,54 @@ def _load_tensors(args, encoder, device) -> list:
 
 
 # ── Main run loop for one filter mode ────────────────────────────────────────
+
+def _print_proto_table(proto_details: dict, raw_proto, class_names: list):
+    """Print the per-prototype breakdown behind each class-level score.
+
+    For every class with a non-empty bank, one row per prototype showing the raw
+    score, its reference statistics, the resulting z-score, and both the raw and
+    normalised appearance weights — then the class score and the prediction.
+    Lets raw-score aggregation and z-score aggregation be compared side by side.
+    """
+    # compute_patch_logits also stuffs "keep_mask" / "filter_scores" into the
+    # details dict when a patch filter is active, so select the integer class
+    # keys before sorting.
+    class_details = {c: d for c, d in proto_details.items()
+                     if isinstance(c, int) and isinstance(d, dict)}
+    has_z = any("z" in d for d in class_details.values())
+
+    for c, det in sorted(class_details.items()):
+        bpp = det["best_per_proto"].cpu().numpy()
+        if bpp.size == 0:
+            continue
+        apw = det["app_w"].cpu().numpy()
+        wgt = det["weighted"].cpu().numpy()
+        mu = det["mu"].cpu().numpy() if "mu" in det else None
+        sigma = det["sigma"].cpu().numpy() if "sigma" in det else None
+        z = det["z"].cpu().numpy() if "z" in det else None
+        w_norm = det["w_norm"].cpu().numpy() if "w_norm" in det else None
+
+        name = class_names[c] if c < len(class_names) else f"class_{c}"
+        print(f"    class {c} ({name}):")
+        if has_z and z is not None:
+            print("      proto |  raw_score |      mu |   sigma |  z_score |  app_w | norm_w")
+            for k in range(bpp.shape[0]):
+                print(
+                    f"      {k:5d} | {bpp[k]:10.6f} | {mu[k]:7.4f} | {sigma[k]:7.4f} | "
+                    f"{z[k]:8.3f} | {apw[k]:6.3f} | {w_norm[k]:6.3f}"
+                )
+        else:
+            print("      proto |  raw_score |  app_w | weighted")
+            for k in range(bpp.shape[0]):
+                print(
+                    f"      {k:5d} | {bpp[k]:10.6f} | {apw[k]:6.3f} | {wgt[k]:10.6f}"
+                )
+        print(f"      final_class_score = {float(raw_proto[c]):.6f}")
+
+    pred = int(raw_proto.argmax())
+    pred_name = class_names[pred] if pred < len(class_names) else f"class_{pred}"
+    print(f"    predicted class = {pred} ({pred_name})")
+
 
 def _run_mode(
     filter_mode: str,
@@ -604,15 +669,7 @@ def _run_mode(
             f"  [{filter_mode}] step={i:02d}  K={K:3d}  "
             f"quality_gate={qg:.4f}  best_proto_logit={best_logit:.4f}"
         )
-        # DEBUG: print proto_details summary for target class (index 0)
-        if 0 in proto_details:
-            det = proto_details[0]
-            bpp = det["best_per_proto"].cpu().numpy()
-            wgt = det["weighted"].cpu().numpy()
-            apw = det["app_w"].cpu().numpy()
-            # print(f"    [DEBUG debug_gaussian_patch] class=0  best_per_proto=[{', '.join(f'{v:.6f}' for v in bpp)}]")
-            # print(f"    [DEBUG debug_gaussian_patch] class=0  weighted=[{', '.join(f'{v:.6f}' for v in wgt)}]")
-            # print(f"    [DEBUG debug_gaussian_patch] class=0  app_w=[{', '.join(f'{v:.6f}' for v in apw)}]")
+        _print_proto_table(proto_details, raw_proto, class_names)
 
         # ── Save per-step figure ──────────────────────────────────────────────
         path = _save_step_figure(
@@ -695,6 +752,19 @@ def parse_args():
     p.add_argument("--match-threshold",     type=float, default=0.60)
     p.add_argument("--max-k",               type=int,   default=20,
                    help="Max clusters per class (default: 20).")
+    p.add_argument("--aggregation",         default="weighted_mean",
+                   choices=["top_m_mean", "max", "sum", "mean",
+                            "top_m_mean_plus_mean", "weighted_mean",
+                            "zscore_weighted_mean", "zscore_top_m_mean"],
+                   help="Prototype-score aggregation (default: weighted_mean). "
+                        "The zscore_* variants normalise each prototype against "
+                        "its own reference distribution before aggregating.")
+    p.add_argument("--top-m",               type=int,   default=4,
+                   help="M for the top_m_* aggregations (default: 4).")
+    p.add_argument("--proto-stats-min-count", type=int, default=2,
+                   help="Reference observations before a prototype's z-score is "
+                        "trusted (default: 2, vs 10 in production configs — this "
+                        "script only walks a few images).")
     p.add_argument("--filter-threshold",    type=float, default=0.5,
                    help="Threshold on normalised [0,1] score for patch filtering (default: 0.5).")
     p.add_argument("--seed",                type=int,   default=42,
