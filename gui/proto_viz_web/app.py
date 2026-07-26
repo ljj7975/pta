@@ -14,7 +14,7 @@ from omegaconf import OmegaConf, DictConfig
 from pydantic import BaseModel
 
 from utils import _resolve_config_chain
-from utils.proto_viz_session import ProtoVizSession, list_available_datasets
+from gui.utils.proto_viz_session import ProtoVizSession, list_available_datasets
 
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))

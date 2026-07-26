@@ -8,10 +8,10 @@ from datasets.imagenet import ImageNet
 from datasets import build_dataset
 from datasets.utils import build_data_loader, AugMixAugmenter
 
-BICUBIC = InterpolationMode.BICUBIC
+_BICUBIC = InterpolationMode.BICUBIC
 
 
-def worker_init_fn(worker_id: int):
+def _worker_init_fn(worker_id: int):
     """Seed each DataLoader worker for deterministic behavior with num_workers > 0."""
     import random
     worker_seed = torch.initial_seed() % 2**32
@@ -19,14 +19,14 @@ def worker_init_fn(worker_id: int):
     np.random.seed(worker_seed)
 
 
-def get_ood_preprocess():
+def _get_ood_preprocess():
     """Build an AugMix preprocessing pipeline for OOD ImageNet variants."""
     normalize = transforms.Normalize(
         mean=[0.48145466, 0.4578275, 0.40821073],
         std=[0.26862954, 0.26130258, 0.27577711],
     )
     base_transform = transforms.Compose(
-        [transforms.Resize(224, interpolation=BICUBIC), transforms.CenterCrop(224)]
+        [transforms.Resize(224, interpolation=_BICUBIC), transforms.CenterCrop(224)]
     )
     preprocess = transforms.Compose([transforms.ToTensor(), normalize])
     aug_preprocess = AugMixAugmenter(
@@ -67,12 +67,12 @@ def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffl
             batch_size=1,
             num_workers=8,
             shuffle=shuffle,
-            worker_init_fn=worker_init_fn,
+            worker_init_fn=_worker_init_fn,
         )
         return test_loader, dataset.classnames, dataset.template
 
     elif dataset_name in ["A", "V", "R", "S"]:
-        preprocess = get_ood_preprocess()
+        preprocess = _get_ood_preprocess()
         dataset = build_dataset(f"imagenet-{dataset_name.lower()}", root_path)
         test_loader = build_data_loader(
             data_source=dataset.test,

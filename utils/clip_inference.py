@@ -13,7 +13,7 @@ def _safe_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.
     return x / x.norm(dim=dim, keepdim=True).clamp(min=eps)
 
 
-def identify_relevant_patches(
+def _identify_relevant_patches(
     heatmap: torch.Tensor,
     threshold: float = 0.5,
     min_patches: int = 1,
@@ -37,7 +37,7 @@ def identify_relevant_patches(
 
     Example:
         >>> scores = torch.tensor([0.1, 0.5, 0.3, 0.9, 0.2])  # 5 patches
-        >>> mask = identify_relevant_patches(scores, threshold=0.7)
+        >>> mask = _identify_relevant_patches(scores, threshold=0.7)
         >>> mask
         tensor([False,  True, False,  True, False])  # 2 patches above threshold
     """
@@ -270,9 +270,9 @@ def filter_patches_by_text_alignment(
     # - cosine_with_labels: target_score - other_mean (higher = more target-specific)
     # - cosine_no_labels: patches @ adjusted_text (higher = more aligned with target)
     # - surgery modes: clip_feature_surgery output (higher = more class-specific)
-    # No negation needed — identify_relevant_patches expects higher = more relevant.
+    # No negation needed — _identify_relevant_patches expects higher = more relevant.
 
-    mask = identify_relevant_patches(
+    mask = _identify_relevant_patches(
         scores,
         threshold=filter_threshold,
         min_patches=1,

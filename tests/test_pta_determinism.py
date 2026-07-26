@@ -4,7 +4,7 @@ Determinism test: run PTA twice on the same dataset with the same seed
 and verify that the results are identical.
 
 Usage (local):
-    python tests/test_determinism.py
+    python tests/test_pta_determinism.py
 
 Usage (srun on slurm):
     srun --pty --gres=gpu:1 --cpus-per-task=4 --mem=16G bash -c '

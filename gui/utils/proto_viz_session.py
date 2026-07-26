@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from utils.proto_viz import ProtoVizEngine, SampleRecord
+from gui.utils.proto_viz import ProtoVizEngine, SampleRecord
 
 
 def _sanitize_token(value: str) -> str:

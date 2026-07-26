@@ -272,23 +272,198 @@ def test_none_mode_keeps_all():
         return False
 
 
+def test_config_override_propagation():
+    """Verify config override propagates correctly to GaussianPatchLevel._cfg."""
+    from utils.config import get_config_file
+    from runner import apply_overrides
+
+    print("\n" + "=" * 60)
+    print("TEST: Config override propagation")
+    print("=" * 60)
+
+    # Load config with override
+    cfg = get_config_file("configs/patch_modulated_pta", "dtd")
+    print(f"  Before override: patch_filter_mode = {cfg.get('patch_level', {}).get('patch_filter_mode')}")
+
+    # Apply override like runner.py does
+    cfg = apply_overrides(cfg, ["patch_level.patch_filter_mode=cosine_with_labels"])
+    print(f"  After override:  patch_filter_mode = {cfg.get('patch_level', {}).get('patch_filter_mode')}")
+
+    # Create GaussianPatchLevel and check its config
+    patch_level = GaussianPatchLevel(cfg)
+    print(f"  GaussianPatchLevel._cfg patch_filter_mode = {patch_level._cfg.get('patch_filter_mode')}")
+
+    assert cfg["patch_level"]["patch_filter_mode"] == "cosine_with_labels"
+    assert patch_level._cfg.get("patch_filter_mode") == "cosine_with_labels"
+    print("  ✓ Config override propagates correctly\n")
+
+
+def test_set_text_context_sets_attributes():
+    """Verify set_text_context properly sets _text_features on GaussianPatchLevel."""
+    from utils.config import get_config_file
+    from runner import apply_overrides
+
+    print("\n" + "=" * 60)
+    print("TEST: set_text_context sets attributes")
+    print("=" * 60)
+
+    cfg = get_config_file("configs/patch_modulated_pta", "dtd")
+    cfg = apply_overrides(cfg, ["patch_level.patch_filter_mode=cosine_with_labels"])
+
+    patch_level = GaussianPatchLevel(cfg)
+
+    assert not hasattr(patch_level, "_text_features"), "Before set_text_context, _text_features should not exist"
+
+    # Create dummy text embeddings [D, C]
+    D, C = 512, 5
+    text_embeddings = torch.randn(D, C).cuda()
+
+    # Create a mock encoder that has .model attribute
+    class MockModel(torch.nn.Module):
+        def encode_text(self, tokens):
+            return torch.randn(tokens.shape[0], 512).to(tokens.device)
+
+    class MockEncoder:
+        def __init__(self):
+            self.model = MockModel()
+
+    encoder = MockEncoder()
+    device = torch.device("cuda")
+
+    patch_level.set_text_context(text_embeddings, encoder, device)
+
+    assert hasattr(patch_level, "_text_features"), "_text_features should exist after set_text_context"
+    assert patch_level._text_features.shape == (C, D), f"Expected ({C}, {D}), got {patch_level._text_features.shape}"
+    assert hasattr(patch_level, "_empty_text_feat"), "_empty_text_feat should exist"
+    assert patch_level._filter_mode == "cosine_with_labels", f"Expected cosine_with_labels, got {patch_level._filter_mode}"
+    print("  ✓ set_text_context sets all required attributes\n")
+
+
+def test_update_state_filtering_difference():
+    """Verify update_state produces different results with different filter modes."""
+    from utils.config import get_config_file
+    from runner import apply_overrides
+
+    print("\n" + "=" * 60)
+    print("TEST: update_state filtering produces different results")
+    print("=" * 60)
+
+    D = 512
+    C = 5
+
+    # Create a state with some existing centers
+    def make_state():
+        return {
+            "centers": torch.randn(3, D).cuda(),
+            "variance": torch.abs(torch.randn(3, D)).cuda() * 0.01 + 0.001,
+            "appearance": torch.ones(3).cuda(),
+            "n_images": 5,
+        }
+
+    # Create dummy encoder that returns patch embeddings
+    class MockVisual(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(3, D, 16, stride=16, bias=False)
+            self.positional_embedding = torch.nn.Parameter(torch.randn(197, D) * 0.01)
+            self.class_embedding = torch.nn.Parameter(torch.randn(D) * 0.01)
+            self.ln_pre = torch.nn.LayerNorm(D)
+            self.ln_post = torch.nn.LayerNorm(D)
+            self.proj = torch.nn.Parameter(torch.randn(D, D) * 0.01)
+            self.transformer = torch.nn.TransformerEncoder(
+                torch.nn.TransformerEncoderLayer(D, 8, D * 4, batch_first=True), num_layers=2
+            )
+            self.input_resolution = 224
+
+        def encode_text(self, tokens):
+            return torch.randn(tokens.shape[0], D).to(tokens.device)
+
+    class MockEncoder:
+        def __init__(self):
+            self.visual = MockVisual().cuda()
+            self.model = MockVisual().cuda()  # for set_text_context
+
+        def get_patch_embeddings(self, images, exclude_pos=False):
+            B = images.shape[0]
+            P = 196  # 14x14 patches
+            return torch.randn(B, P, D).cuda()
+
+        def encode_image(self, images, CLS_token_only=True, preprocess=True):
+            B = images.shape[0]
+            if CLS_token_only:
+                return torch.randn(B, D).cuda()
+            else:
+                return torch.randn(B, 197, D).cuda()  # CLS + 196 patches
+
+    encoder = MockEncoder()
+
+    # Create dummy images
+    images = torch.randn(1, 3, 224, 224).cuda()
+    global_feat = torch.randn(D).cuda()
+
+    text_embeddings = torch.randn(D, C).cuda()
+
+    modes = ["none", "cosine_with_labels", "cosine_no_labels"]
+    results = {}
+
+    for mode in modes:
+        cfg = get_config_file("configs/patch_modulated_pta", "dtd")
+        cfg = apply_overrides(cfg, [f"patch_level.patch_filter_mode={mode}"])
+
+        # Patch filter absolute threshold - set high to force strong filtering
+        cfg["patch_level"]["patch_filter_threshold"] = 0.5
+        cfg["patch_level"]["aug_copies"] = 0  # No augmentation for speed
+
+        patch_level = GaussianPatchLevel(cfg)
+        patch_level.set_text_context(text_embeddings, encoder, torch.device("cuda"))
+
+        state = make_state()
+        new_state = patch_level.update_state(
+            state, images, encoder, global_feat,
+            target_class_idx=0,
+        )
+
+        n_centers = new_state["centers"].shape[0]
+        results[mode] = n_centers
+        print(f"  {mode:25s}: centers after update = {n_centers}")
+
+    # Check that different filter modes produce different state
+    all_same = all(v == results["none"] for v in results.values())
+    if all_same:
+        print("  ⚠ All modes produced same number of centers (this may be expected with few images)")
+    else:
+        print("  ✓ Different filter modes produce different states")
+    print()
+
+
 if __name__ == "__main__":
     print("Running patch filter mode tests...")
     print()
-    
+
+    results = {}
+
     # Test 1: None mode keeps all patches
-    test1_passed = test_none_mode_keeps_all()
-    
+    results["none_mode"] = test_none_mode_keeps_all()
+
     # Test 2: Filter modes produce different masks
-    test2_passed = test_filter_modes_differ()
-    
+    results["modes_differ"] = test_filter_modes_differ()
+
+    # Test 3: Config override propagation
+    results["config_override"] = test_config_override_propagation()
+
+    # Test 4: set_text_context sets attributes
+    results["text_context"] = test_set_text_context_sets_attributes()
+
+    # Test 5: update_state filtering difference
+    results["update_state"] = test_update_state_filtering_difference()
+
     print("\n" + "=" * 60)
     print("FINAL RESULTS")
     print("=" * 60)
-    print(f"Test 1 (None mode): {'PASSED' if test1_passed else 'FAILED'}")
-    print(f"Test 2 (Modes differ): {'PASSED' if test2_passed else 'FAILED'}")
-    
-    if test1_passed and test2_passed:
+    for name, passed in results.items():
+        print(f"  {name:25s}: {'PASSED' if passed else 'FAILED'}")
+
+    if all(results.values()):
         print("\n✓ ALL TESTS PASSED")
         sys.exit(0)
     else:

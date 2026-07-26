@@ -13,15 +13,6 @@ def cls_acc(output: torch.Tensor, target: torch.Tensor, topk: int = 1) -> float:
     return acc
 
 
-def select_confident_samples(logits: torch.Tensor, top: float):
-    """Return the *top* fraction of samples with the lowest entropy."""
-    batch_entropy = -(logits.softmax(1) * logits.log_softmax(1)).sum(1)
-    idx = torch.argsort(batch_entropy, descending=False)[
-        : int(batch_entropy.size()[0] * top)
-    ]
-    return logits[idx], idx
-
-
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
     """Per-sample entropy of a softmax distribution."""
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)

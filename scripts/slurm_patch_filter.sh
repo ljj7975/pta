@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pta_patch_filter
+#SBATCH --job-name=pta_patch_filter_full
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -7,28 +7,27 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-19
-#SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_patch_filter_%x-%A_%a.out
-#SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_patch_filter_%x-%A_%a.err
+#SBATCH --array=0-24
+#SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_patch_filter_full_%x-%A_%a.out
+#SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_patch_filter_full_%x-%A_%a.err
 
 # ============================================================================
-# Patch Filter Mode Benchmark: 4 filter modes × 5 CD datasets
+# Patch Filter Mode Full Benchmark: 5 filter modes × 5 CD datasets = 25 jobs
+#
+# Experiment: patch_modulated_pta / configs/patch_modulated_pta / clip_surgery
+# (same backbone as "PatchModPTA-CLIPSurgery" in slurm_dev.sh)
 #
 # HOW TO USE
 # ----------
-# 1. Comment/uncomment INDIVIDUAL experiment lines below.
-#    Each line is one experiment — independent of the others.
+# 1. Comment/uncomment individual exp() lines below.
 #
-# 2. Update --array to match the number of active experiments × datasets:
+# 2. Update --array to match N_EXP * N_DS - 1:
+#      N_EXP = count of uncommented exp() lines   (currently 5)
+#      N_DS  = ${#DATASETS[@]}                    (currently 5)
+#      --array=0-24  (5*5-1)
 #
-#      N_EXP = count of uncommented exp() lines
-#      N_DS  = ${#DATASETS[@]}   (currently 5)
-#      --array=0-$(( N_EXP * N_DS - 1 ))
-#
-#    Example: all 4 active → --array=0-19
-#    Example: only 2 active → --array=0-9
-#
-# 3. Labels are configurable per-line for re-running with different names.
+# 3. Submit:
+#      sbatch scripts/slurm_patch_filter_full.sh
 #
 # Task mapping:
 #   exp_idx = SLURM_ARRAY_TASK_ID / N_DS
@@ -60,43 +59,32 @@ N_DS=${#DATASETS[@]}
 # ---------------------------------------------------------------------------
 # Experiment registry
 #
-# exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL [OVERRIDE]
+# exp LABEL OVERRIDE
 #
-# Comment/uncomment individual lines to enable/disable experiments.
+# OVERRIDE is passed as --override <value>; use "" for no override (none mode).
 # ---------------------------------------------------------------------------
-_METHODS=()
-_CONFIG_DIRS=()
-_CLIP_MODELS=()
-_CLIP_CHECKPOINTS=()
 _EXP_LABELS=()
 _OVERRIDES=()
 
 exp() {
-    _METHODS+=("$1")
-    _CONFIG_DIRS+=("$2")
-    _CLIP_MODELS+=("$3")
-    _CLIP_CHECKPOINTS+=("$4")
-    _EXP_LABELS+=("$5")
-    _OVERRIDES+=("$6")
+    _EXP_LABELS+=("$1")
+    _OVERRIDES+=("$2")
 }
 
-# ── Patch Filter Modes (CLIPSurgery backbone) ─────────────────────────
-exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CLIPSurgery-FilterCosineLabels"    "patch_level.patch_filter_mode=cosine_with_labels"
-exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CLIPSurgery-FilterCosineNoLabels"  "patch_level.patch_filter_mode=cosine_no_labels"
-exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CLIPSurgery-FilterSurgeryLabels"   "patch_level.patch_filter_mode=surgery_with_labels"
-exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CLIPSurgery-FilterSurgeryNoLabels" "patch_level.patch_filter_mode=surgery_no_labels"
+# ── Patch filter modes: all five, same backbone as PatchModPTA-CLIPSurgery ──
+exp "PatchModPTA-CLIPSurgery-FilterNone"           ""
+exp "PatchModPTA-CLIPSurgery-FilterCosineLabels"   "patch_level.patch_filter_mode=cosine_with_labels"
+exp "PatchModPTA-CLIPSurgery-FilterCosineNoLabels" "patch_level.patch_filter_mode=cosine_no_labels"
+exp "PatchModPTA-CLIPSurgery-FilterSurgeryLabels"  "patch_level.patch_filter_mode=surgery_with_labels"
+exp "PatchModPTA-CLIPSurgery-FilterSurgeryNoLabels" "patch_level.patch_filter_mode=surgery_no_labels"
 
 # ---------------------------------------------------------------------------
 # Derived values
 # ---------------------------------------------------------------------------
-METHODS=("${_METHODS[@]}")
-CONFIG_DIRS=("${_CONFIG_DIRS[@]}")
-CLIP_MODELS=("${_CLIP_MODELS[@]}")
-CLIP_CHECKPOINTS=("${_CLIP_CHECKPOINTS[@]}")
 EXP_LABELS=("${_EXP_LABELS[@]}")
 OVERRIDES=("${_OVERRIDES[@]}")
 
-N_EXP=${#METHODS[@]}
+N_EXP=${#EXP_LABELS[@]}
 N_TOTAL=$((N_EXP * N_DS))
 
 if (( N_EXP == 0 )); then
@@ -104,7 +92,6 @@ if (( N_EXP == 0 )); then
     exit 1
 fi
 
-# Guard: skip if this task ID exceeds the experiment grid
 if (( SLURM_ARRAY_TASK_ID >= N_TOTAL )); then
     echo "SKIP: task $SLURM_ARRAY_TASK_ID >= N_TOTAL ($N_TOTAL). Nothing to do."
     exit 0
@@ -113,41 +100,32 @@ fi
 exp_idx=$((SLURM_ARRAY_TASK_ID / N_DS))
 ds_idx=$((SLURM_ARRAY_TASK_ID % N_DS))
 
-METHOD=${METHODS[$exp_idx]}
-CONFIG=${CONFIG_DIRS[$exp_idx]}
-CLIP_MODEL=${CLIP_MODELS[$exp_idx]}
-CLIP_CKPT=${CLIP_CHECKPOINTS[$exp_idx]}
 DATASET=${DATASETS[$ds_idx]}
 EXP_LABEL=${EXP_LABELS[$exp_idx]}
+OVERRIDE=${OVERRIDES[$exp_idx]}
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 echo "========================================================================"
-echo "  Task ID    : $SLURM_ARRAY_TASK_ID / $SLURM_ARRAY_TASK_MAX"
-echo "  Experiment : $EXP_LABEL ($exp_idx / $N_EXP)"
-echo "  Method     : $METHOD"
-echo "  Config     : $CONFIG"
-echo "  CLIP model : $CLIP_MODEL"
+echo "  Task ID    : $SLURM_ARRAY_TASK_ID / $((N_TOTAL - 1))"
+echo "  Experiment : $EXP_LABEL (exp_idx=$exp_idx)"
 echo "  Dataset    : $DATASET  (ds_idx=$ds_idx)"
+echo "  Override   : ${OVERRIDE:-<none>}"
 echo "  Node       : $(hostname)"
 echo "========================================================================"
 
 export RESULT_LABEL="${EXP_LABEL}"
 
-# Build command — only pass --clip-checkpoint when non-empty
 CMD=(python -u runner.py
-    --method "$METHOD"
-    --config "$CONFIG"
-    --clip-model "$CLIP_MODEL"
+    --method patch_modulated_pta
+    --config configs/patch_modulated_pta
+    --clip-model clip_surgery
     --datasets "$DATASET"
     --backbone ViT-B/16)
 
-if [[ -n "$CLIP_CKPT" ]]; then
-    CMD+=(--clip-checkpoint "$CLIP_CKPT")
+if [[ -n "$OVERRIDE" ]]; then
+    CMD+=(--override $OVERRIDE)
 fi
-
-OVERRIDE=${_OVERRIDES[$exp_idx]}
-if [[ -n "$OVERRIDE" ]]; then CMD+=(--override "$OVERRIDE"); fi
 
 "${CMD[@]}"
