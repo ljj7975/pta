@@ -35,7 +35,7 @@ def parse(path: str) -> Dict[str, Dict[str, float]]:
     return data
 
 
-def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]]) -> None:
+def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]], out_path: str = "outputs/exp_results.txt", ignore_datasets: Optional[List[str]] = None) -> None:
     if methods:
         # case-insensitive substring match
         keys = [
@@ -46,16 +46,23 @@ def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]])
         keys = list(data.keys())
 
     if not keys:
-        print("No matching methods found.")
+        msg = "No matching methods found."
+        print(msg)
+        with open(out_path, "w") as f:
+            f.write(msg + "\n")
         return
 
-    # collect all datasets that appear
-    all_datasets = sorted({d for k in keys for d in data[k]})
+    # collect all datasets that appear, minus ignored ones
+    ignore = {d.lower() for d in ignore_datasets} if ignore_datasets else set()
+    all_datasets = sorted(
+        {d for k in keys for d in data[k] if d.lower() not in ignore}
+    )
     col_w = 14
 
+    lines: List[str] = []
     header = f"{'Method':<35}" + "".join(f"{d:>{col_w}}" for d in all_datasets) + f"{'Avg':>{col_w}}"
-    print(header)
-    print("-" * len(header))
+    lines.append(header)
+    lines.append("-" * len(header))
 
     for method in keys:
         scores = [data[method].get(d) for d in all_datasets]
@@ -66,17 +73,24 @@ def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]])
             return f"{s:>{col_w}.2f}" if s is not None else f"{'—':>{col_w}}"
 
         row = f"{method:<35}" + "".join(fmt(s) for s in scores) + fmt(avg)
-        print(row)
+        lines.append(row)
+
+    table_text = "\n".join(lines) + "\n"
+    print(table_text, end="")
+    with open(out_path, "w") as f:
+        f.write(table_text)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", default="outputs/result.txt")
     parser.add_argument("--methods", nargs="*", help="filter by method name substring")
+    parser.add_argument("--ignore-datasets", nargs="*", help="datasets to exclude from the table (e.g., ucf101 dtd)", default=["ucf101", "caltech101"])
+    parser.add_argument("--out", default="outputs/exp_results.txt", help="output file (overwritten)")
     args = parser.parse_args()
 
     data = parse(args.file)
-    print_table(data, args.methods)
+    print_table(data, args.methods, args.out, args.ignore_datasets)
 
 
 if __name__ == "__main__":
