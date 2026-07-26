@@ -1,0 +1,9 @@
+# PTA method defaults — inherits shared base, adds PTA-specific values.
+
+defaults:
+  - ../base
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 20.0
+  quality_modulation: 1.0

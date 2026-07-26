@@ -1,0 +1,28 @@
+# Shared defaults for all TTA methods.
+# Each method directory has its own base that inherits from this file,
+# and each per-dataset config inherits from the method base.
+
+image_level:
+  type: PTAImageLevel
+  alpha: 0.01
+  T: 20.0
+
+patch_level:
+  type: GaussianPatchLevel
+  max_K: 100
+  match_threshold: 0.6
+  conf_threshold: 0.5
+  conf_margin_threshold: 0.05
+  n_half: 15.0
+  soft_nn_top_m: 4
+  proto_alpha_max: 1.0
+  quality_eps: 0.001
+  exclude_pos: false
+  patch_group_threshold: 0.9
+  gaussian_ema: 0.1
+  variance_min: 0.001
+  variance_max: 1.0
+
+fusion:
+  type: ProtoAlphaFusion
+  tau_text: 1.0

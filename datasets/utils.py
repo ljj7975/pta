@@ -77,6 +77,14 @@ def listdir_nohidden(path, sort=False):
     return items
 
 
+def worker_init_fn(worker_id):
+    """Seed each DataLoader worker for deterministic behavior with num_workers > 0."""
+    import random
+    worker_seed = torch.initial_seed() % 2**32
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
 class Datum:
     """Data instance which defines the basic attributes.
 
@@ -342,7 +350,8 @@ def build_data_loader(
         num_workers=8,
         shuffle=shuffle,
         drop_last=False,
-        pin_memory=(torch.cuda.is_available())
+        pin_memory=(torch.cuda.is_available()),
+        worker_init_fn=worker_init_fn
     )
     assert len(data_loader) > 0
 

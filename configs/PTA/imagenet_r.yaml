@@ -1,0 +1,5 @@
+defaults:
+  - pta
+
+fusion:
+  tau_patch_proto: 0.0
