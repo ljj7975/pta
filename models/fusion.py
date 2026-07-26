@@ -74,6 +74,24 @@ class WeightedFusion(BaseFusion):
         self.tau_text = float(self._cfg.get("tau_text", 1.0))
         self.tau_image_proto = float(self._cfg.get("tau_image_proto", 100.0))
         self.tau_patch_proto = float(self._cfg.get("tau_patch_proto", 0.0))
+        self.patch_squash = str(self._cfg.get("patch_squash", "none"))
+        self.patch_squash_scale = float(self._cfg.get("patch_squash_scale", 3.0))
+
+    def _squash_patch(self, patch_proto_logits: Tensor) -> Tensor:
+        """Optionally bound the patch term before it enters the linear fusion.
+
+        Raw Gaussian prototype scores live in [0, 1], but z-score aggregations
+        are unbounded (roughly [-3, +10]), which puts them on a completely
+        different scale from ``tau_patch_proto``'s tuning. ``tanh`` maps them
+        back into [-1, 1] so the existing tau stays roughly valid.
+
+        Monotonic, so it cannot change the prediction of a patch-only argmax.
+        """
+        if self.patch_squash == "none":
+            return patch_proto_logits
+        if self.patch_squash == "tanh":
+            return torch.tanh(patch_proto_logits / self.patch_squash_scale)
+        raise ValueError(f"Unknown patch_squash: {self.patch_squash}")
 
     def forward(
         self,
@@ -85,7 +103,7 @@ class WeightedFusion(BaseFusion):
         result = self.tau_text * clip_logits.clone()
         result += self.tau_image_proto * image_proto_logits
         if patch_proto_logits is not None:
-            result += self.tau_patch_proto * patch_proto_logits
+            result += self.tau_patch_proto * self._squash_patch(patch_proto_logits)
         return result
 
 
@@ -113,7 +131,10 @@ class ProtoAlphaFusion(WeightedFusion):
         result += self.tau_image_proto * image_proto_logits
         if patch_proto_logits is not None:
             proto_alpha = kwargs.get("proto_alpha", 1.0)
-            result += self.tau_patch_proto * proto_alpha * patch_proto_logits
+            result += (
+                self.tau_patch_proto * proto_alpha
+                * self._squash_patch(patch_proto_logits)
+            )
         return result
 
 
@@ -143,5 +164,8 @@ class QualityGatedFusion(ProtoAlphaFusion):
         if patch_proto_logits is not None:
             quality_gate = kwargs.get("quality_gate", 1.0)
             proto_alpha = kwargs.get("proto_alpha", 1.0)
-            result += self.tau_patch_proto * proto_alpha * quality_gate * patch_proto_logits
+            result += (
+                self.tau_patch_proto * proto_alpha * quality_gate
+                * self._squash_patch(patch_proto_logits)
+            )
         return result

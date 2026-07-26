@@ -23,6 +23,7 @@ from utils.clip_inference import (
     compute_surgery_scores,
     filter_patches_by_text_alignment,
 )
+from utils import proto_stats
 
 
 # Fixed augmentation ranges — not exposed as config
@@ -112,6 +113,9 @@ class GaussianPatchLevel(BasePatchLevel):
                 "appearance": torch.empty(0,    device=device),
                 "n_images":   0,
                 "top_rep_patches": [],  # list of lists: top-3 (patch_idx, image_idx, sim) per cluster
+                # Running reference-score statistics, one entry per prototype.
+                # Grown and permuted in lockstep with centers/variance/appearance.
+                **proto_stats.init_stats(0, device),
             }
             for _ in range(C)
         ]
@@ -174,6 +178,15 @@ class GaussianPatchLevel(BasePatchLevel):
     def compute_patch_logits(self, images, encoder, states,
                               return_details=False,
                               *, filter_scores=None, target_class_idx=None):
+        """Score every class's prototype bank against one image.
+
+        Note: when prototype score statistics are enabled (a ``zscore_*``
+        aggregation, or ``proto_stats_track``) this method **mutates** the
+        per-class dicts in *states*, folding this image's raw prototype scores
+        into each bank's running reference distribution. The write happens only
+        after every class has been scored, so the current image is never part of
+        the statistics used to score it.
+        """
         # ── Config ────────────────────────────────────────────────────────────
         exclude_pos = bool(self._cfg.get("exclude_pos", False))
         top_m = int(self._cfg.get("soft_nn_top_m", 4))
@@ -181,6 +194,19 @@ class GaussianPatchLevel(BasePatchLevel):
         patch_group_threshold = float(self._cfg.get("patch_group_threshold", 0.9))
         variance_min = float(self._cfg.get("variance_min", 0.001))
         aggregation = str(self._cfg.get("aggregation", "top_m_mean"))
+
+        # ── Prototype score statistics ────────────────────────────────────────
+        stats_min_count = int(self._cfg.get("proto_stats_min_count", 10))
+        stats_sigma_eps = float(self._cfg.get("proto_stats_sigma_eps", 1e-6))
+        stats_sigma_warn = float(self._cfg.get("proto_stats_sigma_warn", 1e-4))
+        stats_log_every = int(self._cfg.get("proto_stats_log_every", 0))
+        stats_enabled = (
+            aggregation.startswith("zscore")
+            or bool(self._cfg.get("proto_stats_track", False))
+        )
+        # The z-score path needs per-prototype raw scores, which only come back
+        # via the details dict.
+        want_details = bool(return_details) or stats_enabled
 
         num_classes = len(states)
         device = states[0]["centers"].device if num_classes > 0 else images.device
@@ -215,10 +241,19 @@ class GaussianPatchLevel(BasePatchLevel):
 
         # ── Compute per-class Gaussian score ──────────────────────────────────
         raw_proto = torch.zeros(num_classes, device=device)
-        per_class_details = {}  # c → {best_per_proto, weighted, app_w}
+        per_class_details = {}  # c → {best_per_proto, weighted, app_w, ...}
         for c in range(num_classes):
             if states[c]["centers"].shape[0] > 0:
                 centers_norm = _safe_normalize(states[c]["centers"])
+
+                # Reference distribution for this class's prototypes, built from
+                # every image seen so far — never from the current one.
+                proto_mu = proto_sigma = proto_valid = None
+                if stats_enabled and proto_stats.has_stats(states[c]):
+                    proto_mu, proto_sigma, proto_valid = proto_stats.compute_mu_sigma(
+                        states[c], stats_min_count, stats_sigma_eps
+                    )
+
                 result = _gaussian_score_for_class(
                     patches_norm,
                     centers_norm,
@@ -229,12 +264,28 @@ class GaussianPatchLevel(BasePatchLevel):
                     patch_group_threshold=patch_group_threshold,
                     variance_min=variance_min,
                     aggregation=aggregation,
-                    return_details=return_details,
+                    return_details=want_details,
+                    proto_mu=proto_mu,
+                    proto_sigma=proto_sigma,
+                    proto_valid=proto_valid,
+                    sigma_eps=stats_sigma_eps,
                 )
-                if return_details:
+                if want_details:
                     raw_proto[c], per_class_details[c] = result
                 else:
                     raw_proto[c] = result
+
+        # ── Fold this image into every bank's reference distribution ──────────
+        # Strictly after all scoring above, so no bank's statistics can contain
+        # the image they were just used to score.
+        if stats_enabled:
+            self._accumulate_proto_stats(
+                states, per_class_details,
+                sigma_warn=stats_sigma_warn,
+                min_count=stats_min_count,
+                sigma_eps=stats_sigma_eps,
+                log_every=stats_log_every,
+            )
 
         # ── Quality gate: how discriminative are the raw prototype scores? ───
         proto_var = raw_proto.var()
@@ -247,6 +298,50 @@ class GaussianPatchLevel(BasePatchLevel):
                 details["filter_scores"] = filter_scores_per_class
             return raw_proto, quality_gate, details
         return raw_proto, quality_gate
+
+    def _accumulate_proto_stats(self, states, per_class_details, *,
+                                sigma_warn, min_count, sigma_eps, log_every):
+        """Fold one image's raw prototype scores into every bank's statistics.
+
+        Mutates ``states`` in place. Also refreshes ``self.last_stats_diag`` with
+        a health summary — a large ``n_low_var`` means prototypes whose reference
+        distribution is near-degenerate, so their z-scores are dominated by the
+        sigma floor.
+        """
+        n_protos = 0
+        n_valid = 0
+        n_low_var = 0
+        sigma_total = 0.0
+
+        for c, details in per_class_details.items():
+            best_per_proto = details.get("best_per_proto")
+            if best_per_proto is None or best_per_proto.numel() == 0:
+                continue
+            states[c].update(proto_stats.accumulate(states[c], best_per_proto))
+
+            _, sigma, valid = proto_stats.compute_mu_sigma(
+                states[c], min_count, sigma_eps
+            )
+            n_protos += sigma.numel()
+            n_valid += int(valid.sum().item())
+            n_low_var += proto_stats.low_variance_count(sigma, valid, sigma_warn)
+            sigma_total += float(sigma.sum().item())
+
+        self.last_stats_diag = {
+            "n_protos": n_protos,
+            "n_valid": n_valid,
+            "n_low_var": n_low_var,
+            "mean_sigma": sigma_total / max(n_protos, 1),
+        }
+
+        self._stats_calls = getattr(self, "_stats_calls", 0) + 1
+        if log_every > 0 and self._stats_calls % log_every == 0:
+            d = self.last_stats_diag
+            print(
+                f"[proto_stats] call={self._stats_calls} "
+                f"protos={d['n_protos']} valid={d['n_valid']} "
+                f"low_var={d['n_low_var']} mean_sigma={d['mean_sigma']:.5f}"
+            )
 
     def update_state(self, state, images, encoder, global_feat,
                      *, filter_scores=None, target_class_idx=None):
@@ -378,6 +473,13 @@ class GaussianPatchLevel(BasePatchLevel):
         updated_vars = torch.stack(all_vars, dim=0)
         updated_apps = torch.tensor(all_apps, device=apps.device, dtype=torch.float)
 
+        # Grow the score accumulators to match the new bank size. Freshly created
+        # prototypes start with zero observations and abstain from z-scoring
+        # until they have accumulated proto_stats_min_count reference scores.
+        updated_stats = proto_stats.grow(
+            state, updated_apps.shape[0], updated_centers.device
+        )
+
         # ── Track top-3 representative patches per cluster ─────────────────────
         _TOP3 = 5
         current_image_idx = int(state.get("n_images", 0))
@@ -447,6 +549,9 @@ class GaussianPatchLevel(BasePatchLevel):
             updated_centers = updated_centers[keep]
             updated_vars = updated_vars[keep]
             updated_apps = updated_apps[keep]
+            # Score statistics must follow the same reindexing, or every
+            # surviving prototype inherits a different prototype's history.
+            updated_stats = proto_stats.permute(updated_stats, keep)
             keep_list = keep.tolist()
             new_top_rep = [new_top_rep[k] for k in keep_list]
 
@@ -456,6 +561,7 @@ class GaussianPatchLevel(BasePatchLevel):
         state["appearance"] = updated_apps
         state["n_images"] = state["n_images"] + 1
         state["top_rep_patches"] = new_top_rep
+        state.update(updated_stats)
         if keep_mask is not None:
             state["keep_mask"] = keep_mask[:P]
         else:

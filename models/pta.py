@@ -84,7 +84,7 @@ class PTAAdapter(BaseAdapter):
 
             # Initialize refined text features as original CLIP text embeddings
             # text_embeddings: [D, C] -> transpose to [C, D]
-            refine_feature = text_embeddings.t().float()           # [C, D]
+            refine_feature = text_embeddings.t()                # [C, D] fp16
 
             # Initialize prototype bank with zeros (filled by first samples via EMA)
             target_prototype = self.image_level.init_state(

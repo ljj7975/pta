@@ -4,67 +4,33 @@ Research codebase for ICML 2026 paper: "Prototype-Based Test-Time Adaptation of 
 
 ---
 
-## Remote Execution
-
-All commands must run on the remote Jetson server — never locally. Files are synced automatically on save via SFTP.
-
-- **SSH alias**: `jetson` (10.88.111.59, user: brandon)
-- **Remote project root**: `/home/brandon/repos/pta`
-- **Env**: venv at `~/repos/pta/pta/` — activate with `source pta/bin/activate`
-
-All commands run from the repo root (`/home/brandon/repos/pta`). Always activate the venv inline — `source` works fine in non-interactive SSH sessions.
-
-### Command pattern
-
-```bash
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && <command>"
-```
-
-### Useful one-offs
-
-```bash
-# GPU status
-ssh jetson "nvidia-smi"
-
-# Check running jobs
-ssh jetson "ps aux | grep python"
-
-# Read output file
-ssh jetson "cat /home/brandon/repos/pta/outputs/result.txt"
-
-# List installed packages
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && pip list"
-```
-
----
-
 ## Running Experiments
 
 ### Cross-Domain Generalization
 
 ```bash
 # ViT-B/16 backbone (all 10 CD datasets)
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_cd_benchmark_vit.sh"
+bash scripts/run_cd_benchmark_vit.sh
 
 # ResNet-50 backbone
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_cd_benchmark_rn50.sh"
+bash scripts/run_cd_benchmark_rn50.sh
 ```
 
 ### OOD Generalization (ImageNet variants)
 
 ```bash
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_ood_benchmark_vit.sh"
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && bash scripts/run_ood_benchmark_rn50.sh"
+bash scripts/run_ood_benchmark_vit.sh
+bash scripts/run_ood_benchmark_rn50.sh
 ```
 
 ### Manual single-dataset run
 
 ```bash
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runner.py \
+python runner.py \
   --method pta \
   --config configs \
   --datasets caltech101 \
-  --backbone ViT-B/16"
+  --backbone ViT-B/16
 ```
 
 `--datasets` accepts `/`-separated names (e.g. `I/A/V/R/S` or `caltech101/dtd`).  
@@ -73,11 +39,11 @@ ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runn
 ### Running a different/new method
 
 ```bash
-ssh jetson "cd /home/brandon/repos/pta && source pta/bin/activate && python runner.py \
+python runner.py \
   --method my_new_method \
   --config configs \
   --datasets caltech101 \
-  --backbone ViT-B/16"
+  --backbone ViT-B/16
 ```
 
 Create `models/my_new_method.py` implementing `BaseAdapter` — no changes to `runner.py` needed.
@@ -129,7 +95,7 @@ Dataset name aliases for `--datasets`:
 ## Gotchas
 
 - `clip/` is a **local vendored copy** of CLIP. Never `pip install clip` — `import clip` resolves to this local directory.
-- `outputs/` must exist before running or the script crashes. Create it with `ssh jetson "mkdir -p /home/brandon/repos/pta/outputs"`.
+- `outputs/` must exist before running or the script crashes. Create it with `mkdir -p outputs`.
 - `build_test_data_loader` in `utils.py` raises a bare string (`raise "Dataset is not..."`) — not a real exception in Python 3. Use `raise ValueError(...)` when extending dataset support.
 - `pta_runner.py` is deprecated — all scripts use `runner.py`.
 - `batch_size=1` is hardcoded in test loaders — TTA processes one sample at a time by design.

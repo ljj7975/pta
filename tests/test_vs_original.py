@@ -351,8 +351,12 @@ def main() -> int:
     # ── Initialize both implementations ───────────────────────────────────
     orig_refine_feature = clip_weights.t()  # [C, D]
     orig_target_prototype = torch.zeros_like(orig_refine_feature).cuda()
-    orig_alpha = cfg.get("alpha", 0.01)
-    orig_T = cfg.get("T", 20.0)
+    # Original PTA-main uses flat config: {alpha: 0.01, T: 50.0}
+    # Our config nests these under "image_level". Extract from the correct
+    # location so both sides use the SAME hyperparameters.
+    _il = cfg.get("image_level", {})
+    orig_alpha = _il.get("alpha", 0.01)
+    orig_T = _il.get("T", 20.0)
 
     # Our PTA state
     our_wrapper = OurPTAWrapper(cfg)

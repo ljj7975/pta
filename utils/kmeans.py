@@ -3,11 +3,12 @@
 These functions are used exclusively by GaussianPatchLevel and the proto_viz
 tool — they are not general-purpose utilities.
 """
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 
 from utils.clip_inference import _safe_normalize
+from utils.proto_stats import zscore as _zscore
 
 
 def _incremental_kmeans_step(
@@ -125,6 +126,10 @@ def _gaussian_score_for_class(
     variance_min: float = 0.001,
     aggregation: str = "top_m_mean",
     return_details: bool = False,
+    proto_mu: Optional[torch.Tensor] = None,
+    proto_sigma: Optional[torch.Tensor] = None,
+    proto_valid: Optional[torch.Tensor] = None,
+    sigma_eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     Score one class using Gaussian prototype similarity.
@@ -134,11 +139,27 @@ def _gaussian_score_for_class(
 
     Then apply one-to-one assignment (same as MPTA) and top-M aggregation.
 
+    The ``zscore_*`` aggregations first normalize each prototype's raw score
+    against that prototype's own reference distribution (``proto_mu`` /
+    ``proto_sigma``, maintained online by utils.proto_stats), so that scores from
+    prototypes with different natural score ranges become comparable. They
+    require ``proto_mu``/``proto_sigma``/``proto_valid``; without them the call
+    falls back to the raw-score path.
+
     Returns a scalar score for this class.
     """
     num_input_patches = patches_norm.shape[0]
     if num_input_patches == 0 or centers_norm.shape[0] == 0:
-        return torch.tensor(0.0, device=centers_norm.device)
+        empty = torch.tensor(0.0, device=centers_norm.device)
+        if return_details:
+            K0 = centers_norm.shape[0]
+            zeros = torch.zeros(K0, device=centers_norm.device)
+            return empty, {
+                "best_per_proto": zeros,
+                "weighted": zeros.clone(),
+                "app_w": zeros.clone(),
+            }
+        return empty
 
     K = centers_norm.shape[0]
 
@@ -209,7 +230,43 @@ def _gaussian_score_for_class(
 
     k = min(top_m, weighted.numel())
     if k <= 0:
-        return torch.tensor(0.0, device=gaussian_scores.device)
+        empty = torch.tensor(0.0, device=gaussian_scores.device)
+        if return_details:
+            return empty, {
+                "best_per_proto": best_per_proto,
+                "weighted": weighted,
+                "app_w": app_w,
+            }
+        return empty
+
+    # ── Z-score normalization (optional) ───────────────────────────────────
+    # Convert each prototype's raw score into a prototype-specific z-score, then
+    # aggregate with appearance weights normalized to sum to 1 within the class.
+    # This makes class scores comparable even when classes hold different
+    # numbers of prototypes with different natural score ranges.
+    z = None
+    w_norm = None
+    if aggregation.startswith("zscore") and proto_mu is not None:
+        z = _zscore(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
+        w_norm = app_w / app_w.sum().clamp(min=1e-6)
+        z_weighted = w_norm * z  # [K]
+
+        if aggregation == "zscore_top_m_mean":
+            score = z_weighted.topk(k).values.mean()
+        else:  # "zscore_weighted_mean" — the weighted mean z-score
+            score = z_weighted.sum()
+
+        if return_details:
+            return score, {
+                "best_per_proto": best_per_proto,  # [K] raw score, kept for comparison
+                "weighted": z_weighted,            # [K] normalized-weight × z
+                "app_w": app_w,                    # [K] raw appearance weights
+                "mu": proto_mu,                    # [K] reference mean
+                "sigma": proto_sigma,              # [K] reference std
+                "z": z,                            # [K] prototype-specific z-score
+                "w_norm": w_norm,                  # [K] appearance weights, sum to 1
+            }
+        return score
 
     if aggregation == "top_m_mean":
         score = weighted.topk(k).values.mean()

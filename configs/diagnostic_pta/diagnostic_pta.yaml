@@ -10,6 +10,6 @@ patch_level:
 
 fusion:
   tau_image_proto: 80.0
-  mode: interpolate          # interpolate | alpha_gate | tau_gate | hybrid
+  mode: patch_only           # patch_only | image_only
   quality_modulation: 1.0
   alpha_gate_scale: 0.5
