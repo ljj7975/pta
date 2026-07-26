@@ -14,10 +14,13 @@ import os
 import random
 import argparse
 
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+import numpy as np
 import torch
-import clip
 
 from utils import get_config_file, build_test_data_loader, clip_classifier, get_imagenet_subset_remap
+from encoder import create_encoder_instance
 
 
 def get_arguments():
@@ -56,12 +59,26 @@ def get_arguments():
         help="Root directory that contains all dataset folders.",
     )
     parser.add_argument(
+        "--clip-model",
+        dest="clip_model",
+        type=str,
+        choices=["clip", "clip_surgery", "detail-clip"],
+        default="clip_surgery",
+        help="Encoder type (default: clip_surgery).",
+    )
+    parser.add_argument(
+        "--clip-checkpoint",
+        dest="clip_checkpoint",
+        type=str,
+        default=None,
+        help="Path to model checkpoint (required for detail-clip).",
+    )
+    parser.add_argument(
         "--backbone",
         dest="backbone",
         type=str,
-        choices=["RN50", "ViT-B/16"],
-        required=True,
-        help="CLIP backbone: RN50 or ViT-B/16.",
+        default="ViT-B/16",
+        help="Vision backbone name passed to the encoder (default: ViT-B/16).",
     )
     parser.add_argument(
         "--wandb-log",
@@ -76,8 +93,46 @@ def get_arguments():
         default=1,
         help="Random seed (default: 1).",
     )
+    parser.add_argument(
+        "--override",
+        dest="overrides",
+        nargs="*",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override one or more config values after loading the YAML. "
+            "Supports dotted paths for nested keys. "
+            "Values are auto-cast to float/int when possible. "
+            "Example: --override conf_threshold=0.3 conf_margin_threshold=0.1"
+        ),
+    )
 
     return parser.parse_args()
+
+
+def apply_overrides(cfg: dict, overrides: list) -> dict:
+    """Apply key=value override strings to a config dict.
+
+    Supports dotted paths (e.g. ``patch_level.conf_threshold=0.3``).
+    Values are auto-cast to float or int when possible; otherwise kept as str.
+    """
+    for item in overrides:
+        key, _, raw = item.partition("=")
+        # Auto-cast value
+        try:
+            value = int(raw)
+        except ValueError:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = raw
+        # Walk dotted path
+        keys = key.split(".")
+        d = cfg
+        for k in keys[:-1]:
+            d = d.setdefault(k, {})
+        d[keys[-1]] = value
+    return cfg
 
 
 def load_adapter_module(method: str):
@@ -101,14 +156,27 @@ def main():
 
     # ------------------------------------------------------------------ setup
     random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
     os.makedirs("outputs", exist_ok=True)
 
-    # ------------------------------------------------------------------ CLIP
-    print(f"Loading CLIP backbone: {args.backbone}")
-    clip_model, preprocess = clip.load(args.backbone)
-    clip_model.eval()
+    # ------------------------------------------------------------------ Encoder
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading encoder: {args.clip_model} / {args.backbone}")
+
+    encoder_kwargs = {"model_type": args.backbone, "device": device}
+    if args.clip_checkpoint and args.clip_model == "detail-clip":
+        os.environ["DETAILCLIP_CHECKPOINT"] = args.clip_checkpoint
+
+    encoder = create_encoder_instance(args.clip_model, **encoder_kwargs)
+    preprocess = encoder.preprocess
 
     # ------------------------------------------------------------------ adapter module
     adapter_module = load_adapter_module(args.method)
@@ -123,6 +191,8 @@ def main():
         print(f"{'='*60}")
 
         cfg = get_config_file(args.config, dataset_name)
+        if args.overrides:
+            cfg = apply_overrides(cfg, args.overrides)
         print("Config:", cfg)
 
         # Build a fresh adapter instance per dataset so running state
@@ -130,11 +200,11 @@ def main():
         adapter = adapter_module.build(cfg)
 
         test_loader, classnames, template = build_test_data_loader(
-            dataset_name, args.data_root, preprocess
+            dataset_name, args.data_root, preprocess, shuffle=True
         )
-        clip_weights = clip_classifier(classnames, template, clip_model)
+        text_embeddings = clip_classifier(classnames, template, encoder)
 
-        acc = adapter.run(test_loader, clip_model, clip_weights, dataset_name)
+        acc = adapter.run(test_loader, encoder, text_embeddings, dataset_name)
 
         print(f"\n  >> [{args.method.upper()}] {dataset_name}: {acc:.2f}%\n")
 
