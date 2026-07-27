@@ -7,7 +7,7 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-44
+#SBATCH --array=0-74
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.err
 
@@ -38,7 +38,7 @@
 # HOW TO USE
 # ----------
 # 1. Set CLIP_MODEL / EXTRA_OVERRIDES below.
-# 2. Update --array to match N_EXP x N_DS (currently 9 x 5 = 45 → 0-44).
+# 2. Update --array to match N_EXP x N_DS (currently 15 x 5 = 75 → 0-74).
 # 3. sbatch scripts/slurm_proto_zscore.sh
 #
 # Task mapping:
@@ -106,6 +106,17 @@ exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-WeightedMe
 exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-WeightedMean-MinC20" \
     "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean patch_level.proto_stats_min_count=20 $EXTRA_OVERRIDES"
 
+# ── Setting 2: stale-stats fixes (option 2 / option 3) ──────────────────────
+# EMA decay: exponential down-weight of old scores so the reference distribution
+# tracks the current (drifted) center more closely.
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-EMA95" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-EMA99" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+# Combined: apply both corrections simultaneously.
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Z-EMA95-CA" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_weighted_mean patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+
 # ── Setting 1: patch_modulated_pta (z enters a linear fusion) ───────────────
 exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Raw-TopM" \
     "$EXTRA_OVERRIDES"
@@ -119,6 +130,14 @@ exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau5" \
     "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=5.0 $EXTRA_OVERRIDES"
 exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tanh-Tau20" \
     "patch_level.aggregation=zscore_weighted_mean fusion.patch_squash=tanh fusion.tau_patch_proto=20.0 $EXTRA_OVERRIDES"
+
+# ── Setting 1: stale-stats fixes at Tau1 (best single tau from sweep above) ─
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau1-EMA95" \
+    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau1-EMA99" \
+    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Z-Tau1-EMA95-CA" \
+    "patch_level.aggregation=zscore_weighted_mean fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
 
 # ---------------------------------------------------------------------------
 # Derived values

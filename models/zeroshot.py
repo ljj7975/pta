@@ -38,6 +38,15 @@ class ZeroShotAdapter:
 
         final_acc = sum(accuracies) / len(accuracies)
         print(f"\n---- ZeroShot FINAL {final_acc:.2f}% ----\n")
+
+        label = os.environ.get("RESULT_LABEL", "ZeroShot")
+        result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
+        with open(result_file, "a") as f:
+            f.write(
+                f"{label}'s performance on {dataset_name}: "
+                f"Top1- {final_acc:.2f}.\n"
+            )
+
         return final_acc
 
 

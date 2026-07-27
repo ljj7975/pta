@@ -79,14 +79,14 @@ exp() {
 }
 
 # ── CLIPSurgery ──────────────────────────────────────────────────────
-exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CLIPSurgery"
-exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CLIPSurgery"
-exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CLIPSurgery"
+exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CS-2"
+exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CS-2"
+exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CS-2"
 
 # ── Regular CLIP ────────────────────────────────────────────────────
-exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP"
-exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP"
-exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP"
+exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP-2"
+exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP-2"
+exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP-2"
 
 # ---------------------------------------------------------------------------
 # Derived values

@@ -23,7 +23,7 @@ patch_level:
   variance_min: 0.001
   variance_max: 1.0
   # Per-prototype score normalization. Active when `aggregation` is a zscore_*
-  # variant (zscore_weighted_mean | zscore_top_m_mean), or when tracking is
+  # variant (zscore_weighted_mean), or when tracking is
   # forced on for diagnostics. `aggregation` itself is left unset here so the
   # code default (top_m_mean) keeps existing runs unchanged.
   proto_stats_track: false      # accumulate stats even on raw-score aggregations

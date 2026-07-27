@@ -12,23 +12,18 @@ class CLIPSurgeryEncoder(Encoder):
     def __init__(self, model_type='ViT-B/32', device='cpu'):
         if not hasattr(self, "initialized"):  # Only initialize once
             super().__init__(model_type, device)
-            self.model, clip_preprocess = clip_surgery.load(f"CS-{model_type}", device=device)
-            # Use the preprocess from clip_surgery.load() — it includes Resize to match
-            # the model's input resolution (224 for ViT-B/16). This handles varying
-            # image sizes (e.g. Caltech101) correctly.
-            self.preprocess = clip_preprocess
+            self.model, _ = clip_surgery.load(f"CS-{model_type}", device=device)
+            import clip as standard_clip
+            _, self.preprocess = standard_clip.load(model_type, device=device)
             self.preprocess_for_torch = transform_for_torch(self.image_size)
             self.model.eval()
             self.initialized = True
 
-    def encode_text(self, texts:List[str], prompt_templates=None):
-        if prompt_templates is None:
-            prompt_templates = ['a photo of {}']
+    def encode_text(self, texts: List[str], prompt_templates=None):
         with torch.no_grad():
-            text_features = clip_surgery.encode_text_with_prompt_ensemble(
-                self.model, texts, self.device, prompt_templates=prompt_templates
-            )
-        text_features = text_features / text_features.norm(dim=1, keepdim=True)
+            tokens = clip_surgery.tokenize(texts).to(self.device)
+            text_features = self.model.encode_text(tokens)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         return text_features
 
     def _encode_image(self, img_tensors: List, CLS_token_only=True, normalize_image_embeddings=True):
@@ -54,8 +49,7 @@ class CLIPEncoder(CLIPSurgeryEncoder):
     """
     Standard CLIP Encoder (not CLIP Surgery).
 
-    Loads a vanilla OpenAI CLIP model via the CLIP Surgery library's loader
-    (which supports both regular CLIP and CLIP Surgery checkpoints).
+    Loads a vanilla OpenAI CLIP model using the local vendored clip module.
     """
 
     # Standard CLIP bidirectional attention causes patch tokens to absorb global
@@ -68,11 +62,56 @@ class CLIPEncoder(CLIPSurgeryEncoder):
             # Skip CLIPSurgeryEncoder.__init__ to avoid "CS-" prefix loading;
             # call Encoder.__init__ directly for transforms/setup.
             super(CLIPSurgeryEncoder, self).__init__(model_type, device)
-            self.model, clip_preprocess = clip_surgery.load(model_type, device=device)
+            # Use local vendored clip module (not clip_surgery) for standard CLIP
+            import clip as standard_clip
+            self.model, clip_preprocess = standard_clip.load(model_type, device=device)
             self.preprocess = clip_preprocess
             self.preprocess_for_torch = transform_for_torch(self.image_size)
             self.model.eval()
             self.initialized = True
+
+    def _encode_image(self, img_tensors, CLS_token_only=True, normalize_image_embeddings=True):
+        with torch.no_grad():
+            if isinstance(img_tensors, List):
+                img_tensors = torch.stack(img_tensors)
+            img_tensors = img_tensors.to(self.device)
+
+            if CLS_token_only:
+                img_features = self.model.encode_image(img_tensors)
+            else:
+                cls_feats = self.model.encode_image(img_tensors)          # [B, D]
+                patch_feats = self.model.visual(img_tensors.type(self.model.dtype), return_patches=True)  # [B, P, D]
+                img_features = torch.cat([cls_feats.unsqueeze(1), patch_feats], dim=1)
+
+            if normalize_image_embeddings:
+                img_features = img_features / img_features.norm(dim=-1, keepdim=True)
+        return img_features
+
+    def encode_text(self, texts: List[str], prompt_templates=None):
+        with torch.no_grad():
+            import clip as standard_clip
+            tokens = standard_clip.tokenize(texts).to(self.device)
+            text_features = self.model.encode_text(tokens)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        return text_features
+
+    def get_patch_embeddings(self, image, exclude_pos=False):
+        """Extract per-patch embeddings using VisionTransformer(return_patches=True).
+
+        The standard CLIP encode_image() returns CLS-only (2D) by default, so the
+        inherited get_patch_embeddings which does ``features[:, 1:]`` strips a
+        feature dimension instead of the CLS token.  We bypass encode_image and
+        call the visual encoder directly with return_patches=True, which returns
+        patch tokens as [B, P, D] (CLS already excluded).
+        """
+        with torch.no_grad():
+            if image.dim() == 3:
+                image = image.unsqueeze(0)
+            img = image.to(self.device)
+            # VisionTransformer.forward(return_patches=True) returns [B, P, D]
+            # where P = num_patches and CLS is already excluded.
+            patch_features = self.model.visual(img.type(self.model.dtype), return_patches=True)
+            return patch_features.squeeze(0).float()  # [P, D]
 
 
 class OpenClipEncoder(Encoder):

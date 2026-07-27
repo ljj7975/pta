@@ -70,6 +70,16 @@ def _incremental_kmeans_step(
     # Normalize so that dot-product equals cosine similarity
     centers_norm = _safe_normalize(cluster_centers, dim=-1)  # [K, D]
 
+    # Shape guard: patches and centers must share the feature dimension
+    if patches_norm.shape[-1] != centers_norm.shape[-1]:
+        raise RuntimeError(
+            f"Feature dimension mismatch in _incremental_kmeans_step: "
+            f"patches_norm={list(patches_norm.shape)} vs "
+            f"centers_norm={list(centers_norm.shape)}. "
+            f"patches_norm dtype={patches_norm.dtype}, "
+            f"centers_norm dtype={centers_norm.dtype}"
+        )
+
     # For every patch, compute similarity to every existing prototype
     similarities = patches_norm @ centers_norm.t()           # [P, K]
     best_sims, best_clusters = similarities.max(dim=1)       # [P], [P]  best match per patch
@@ -124,7 +134,7 @@ def _gaussian_score_for_class(
     top_m: int,
     patch_group_threshold: float = 0.9,
     variance_min: float = 0.001,
-    aggregation: str = "top_m_mean",
+    aggregation: str = "weighted_mean",
     return_details: bool = False,
     proto_mu: Optional[torch.Tensor] = None,
     proto_sigma: Optional[torch.Tensor] = None,
@@ -163,7 +173,7 @@ def _gaussian_score_for_class(
 
     K = centers_norm.shape[0]
 
-    # ── Patch grouping (same as MPTA) ──────────────────────────────────────
+    # ── Patch grouping ──────────────────────────────────────
     patch_sims = patches_norm @ patches_norm.t()  # [P, P]
     unassigned = torch.ones(num_input_patches, dtype=torch.bool, device=patches_norm.device)
     rep_centers = []
@@ -207,7 +217,7 @@ def _gaussian_score_for_class(
     scaled_maha = (diff.pow(2) / var_clamped[None, :, :]).sum(dim=-1)  # [G, K]
     gaussian_scores = torch.exp(-0.5 * scaled_maha)  # [G, K]
 
-    # ── One-to-one assignment (same as MPTA) ───────────────────────────────
+    # ── One-to-one assignment ───────────────────────────────
     num_groups, K = gaussian_scores.shape
     proto_best_vals = gaussian_scores.max(dim=0).values
     proto_order = torch.argsort(proto_best_vals, descending=True)
@@ -229,15 +239,6 @@ def _gaussian_score_for_class(
     weighted = best_per_proto * app_w  # [K]
 
     k = min(top_m, weighted.numel())
-    if k <= 0:
-        empty = torch.tensor(0.0, device=gaussian_scores.device)
-        if return_details:
-            return empty, {
-                "best_per_proto": best_per_proto,
-                "weighted": weighted,
-                "app_w": app_w,
-            }
-        return empty
 
     # ── Z-score normalization (optional) ───────────────────────────────────
     # Convert each prototype's raw score into a prototype-specific z-score, then
@@ -251,10 +252,8 @@ def _gaussian_score_for_class(
         w_norm = app_w / app_w.sum().clamp(min=1e-6)
         z_weighted = w_norm * z  # [K]
 
-        if aggregation == "zscore_top_m_mean":
-            score = z_weighted.topk(k).values.mean()
-        else:  # "zscore_weighted_mean" — the weighted mean z-score
-            score = z_weighted.sum()
+        # "zscore_weighted_mean" — the weighted mean z-score
+        score = z_weighted.sum()
 
         if return_details:
             return score, {

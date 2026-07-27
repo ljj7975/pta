@@ -193,13 +193,22 @@ class GaussianPatchLevel(BasePatchLevel):
         quality_eps = float(self._cfg.get("quality_eps", 1e-3))
         patch_group_threshold = float(self._cfg.get("patch_group_threshold", 0.9))
         variance_min = float(self._cfg.get("variance_min", 0.001))
-        aggregation = str(self._cfg.get("aggregation", "top_m_mean"))
+        aggregation = str(self._cfg.get("aggregation", "weighted_mean"))
 
         # ── Prototype score statistics ────────────────────────────────────────
-        stats_min_count = int(self._cfg.get("proto_stats_min_count", 10))
-        stats_sigma_eps = float(self._cfg.get("proto_stats_sigma_eps", 1e-6))
+        stats_min_count  = int(self._cfg.get("proto_stats_min_count", 10))
+        stats_sigma_eps  = float(self._cfg.get("proto_stats_sigma_eps", 1e-6))
         stats_sigma_warn = float(self._cfg.get("proto_stats_sigma_warn", 1e-4))
-        stats_log_every = int(self._cfg.get("proto_stats_log_every", 0))
+        stats_log_every  = int(self._cfg.get("proto_stats_log_every", 0))
+        # proto_stats_mode controls how stale-center bias is mitigated:
+        #   "ema"              — exponential decay on counts/sums
+        #   "center_aware"     — gate validity by cosine drift from stored center (default)
+        #   "ema_center_aware" — both corrections together
+        stats_mode          = str(self._cfg.get("proto_stats_mode", "center_aware"))
+        stats_ema_decay     = float(self._cfg.get("proto_stats_ema_decay", 0.99))
+        stats_center_decay  = float(self._cfg.get("proto_stats_center_decay", 0.95))
+        stats_use_ema       = stats_mode in ("ema", "ema_center_aware")
+        stats_use_center    = stats_mode in ("center_aware", "ema_center_aware")
         stats_enabled = (
             aggregation.startswith("zscore")
             or bool(self._cfg.get("proto_stats_track", False))
@@ -251,7 +260,8 @@ class GaussianPatchLevel(BasePatchLevel):
                 proto_mu = proto_sigma = proto_valid = None
                 if stats_enabled and proto_stats.has_stats(states[c]):
                     proto_mu, proto_sigma, proto_valid = proto_stats.compute_mu_sigma(
-                        states[c], stats_min_count, stats_sigma_eps
+                        states[c], stats_min_count, stats_sigma_eps,
+                        current_centers=states[c]["centers"] if stats_use_center else None,
                     )
 
                 result = _gaussian_score_for_class(
@@ -285,6 +295,9 @@ class GaussianPatchLevel(BasePatchLevel):
                 min_count=stats_min_count,
                 sigma_eps=stats_sigma_eps,
                 log_every=stats_log_every,
+                ema_decay=stats_ema_decay if stats_use_ema else 1.0,
+                use_center=stats_use_center,
+                center_decay=stats_center_decay,
             )
 
         # ── Quality gate: how discriminative are the raw prototype scores? ───
@@ -300,7 +313,8 @@ class GaussianPatchLevel(BasePatchLevel):
         return raw_proto, quality_gate
 
     def _accumulate_proto_stats(self, states, per_class_details, *,
-                                sigma_warn, min_count, sigma_eps, log_every):
+                                sigma_warn, min_count, sigma_eps, log_every,
+                                ema_decay=1.0, use_center=False, center_decay=0.95):
         """Fold one image's raw prototype scores into every bank's statistics.
 
         Mutates ``states`` in place. Also refreshes ``self.last_stats_diag`` with
@@ -317,10 +331,16 @@ class GaussianPatchLevel(BasePatchLevel):
             best_per_proto = details.get("best_per_proto")
             if best_per_proto is None or best_per_proto.numel() == 0:
                 continue
-            states[c].update(proto_stats.accumulate(states[c], best_per_proto))
+            states[c].update(proto_stats.accumulate(
+                states[c], best_per_proto,
+                decay=ema_decay,
+                centers=states[c]["centers"] if use_center else None,
+                center_decay=center_decay,
+            ))
 
             _, sigma, valid = proto_stats.compute_mu_sigma(
-                states[c], min_count, sigma_eps
+                states[c], min_count, sigma_eps,
+                current_centers=states[c]["centers"] if use_center else None,
             )
             n_protos += sigma.numel()
             n_valid += int(valid.sum().item())

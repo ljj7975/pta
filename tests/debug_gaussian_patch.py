@@ -755,7 +755,7 @@ def parse_args():
     p.add_argument("--aggregation",         default="weighted_mean",
                    choices=["top_m_mean", "max", "sum", "mean",
                             "top_m_mean_plus_mean", "weighted_mean",
-                            "zscore_weighted_mean", "zscore_top_m_mean"],
+                            "zscore_weighted_mean"],
                    help="Prototype-score aggregation (default: weighted_mean). "
                         "The zscore_* variants normalise each prototype against "
                         "its own reference distribution before aggregating.")

@@ -83,10 +83,10 @@ def print_table(data: Dict[str, Dict[str, float]], methods: Optional[List[str]],
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", default="outputs/result.txt")
+    parser.add_argument("--file", default="outputs/proto_zscore_results.txt")
     parser.add_argument("--methods", nargs="*", help="filter by method name substring")
-    parser.add_argument("--ignore-datasets", nargs="*", help="datasets to exclude from the table (e.g., ucf101 dtd)", default=["ucf101", "caltech101"])
-    parser.add_argument("--out", default="outputs/exp_results.txt", help="output file (overwritten)")
+    parser.add_argument("--ignore-datasets", nargs="*", help="datasets to exclude from the table (e.g., ucf101 dtd)", default=["ucf101", "caltech101", "fgvc"])
+    parser.add_argument("--out", default="outputs/proto_zscore_exp_results.txt", help="output file (overwritten)")
     args = parser.parse_args()
 
     data = parse(args.file)
