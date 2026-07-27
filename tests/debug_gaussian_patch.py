@@ -77,13 +77,16 @@ def _rgb(k: int) -> np.ndarray:
 
 
 def _assignment_overlay(image_np: np.ndarray, assignments, K: int,
-                         alpha: float = 0.55) -> np.ndarray:
+                         alpha: float = 0.55,
+                         keep_mask: np.ndarray = None) -> np.ndarray:
     """
     Blend a 14×14 cluster-color grid over a 224×224 image.
 
     assignments : [196] int array (patch_idx → cluster_idx), or None.
     K           : number of clusters (for cmap range; not used if assignments is None).
     alpha       : blending weight for the color grid (0 = original image only).
+    keep_mask   : [196] bool array — when provided, patches where False are
+                  grayed out (filtered by the text-alignment filter).
 
     Returns [224, 224, 3] uint8.
     """
@@ -101,7 +104,14 @@ def _assignment_overlay(image_np: np.ndarray, assignments, K: int,
     for r in range(GRID):
         for c in range(GRID):
             if not covered[r, c]:
-                grid[r, c] = (0.65, 0.65, 0.65)
+                grid[r, c] = (0.85, 0.85, 0.85)
+
+    # Gray-out patches filtered by the text-alignment filter
+    if keep_mask is not None:
+        for pidx in range(GRID * GRID):
+            if not keep_mask[pidx]:
+                r, c = pidx // GRID, pidx % GRID
+                grid[r, c] = (0.85, 0.85, 0.85)
 
     grid_pil = PilImage.fromarray((grid * 255).astype(np.uint8))
     grid_pil = grid_pil.resize((IMPX, IMPX), PilImage.NEAREST)
@@ -113,7 +123,7 @@ def _assignment_overlay(image_np: np.ndarray, assignments, K: int,
 
 def _crops_strip(image_np: np.ndarray, assignments, K: int,
                  sims: np.ndarray = None,
-                 max_per_cluster: int = 12, cell: int = 32,
+                 max_per_cluster: int = 5, cell: int = 32,
                  state_after_i: dict = None, tensors: list = None,
                  keep_mask: np.ndarray = None) -> np.ndarray:
     """
@@ -265,11 +275,19 @@ def _save_step_figure(
     assign_i, sims_i    = _assign_all_patches(tensor_i,    state_after_i, encoder)
     assign_next, _      = _assign_all_patches(tensor_next, state_after_i, encoder)
 
-    overlay_i    = _assignment_overlay(img_i,    assign_i,    K)
-    overlay_next = _assignment_overlay(img_next, assign_next, K)
+    # Keep masks for graying out filtered patches in cluster overlays
+    km_i = state_after_i.get("keep_mask", None)
+    km_i_np = km_i.cpu().numpy() if km_i is not None else None
 
-    km = state_after_i.get("keep_mask", None)
-    km_np = km.cpu().numpy() if km is not None else None
+    # For image_{i+1}, use the filter mask from compute_patch_logits details
+    km_next_np = None
+    if proto_details is not None and "keep_mask" in proto_details:
+        km_next_np = proto_details["keep_mask"].cpu().numpy()
+
+    overlay_i    = _assignment_overlay(img_i,    assign_i,    K, keep_mask=km_i_np)
+    overlay_next = _assignment_overlay(img_next, assign_next, K, keep_mask=km_next_np)
+
+    km_np = km_i_np  # alias for crops_strip (uses image_i's mask)
     strip        = _crops_strip(img_i, assign_i, K, sims=sims_i,
                                 state_after_i=state_after_i, tensors=tensors,
                                 keep_mask=km_np)
@@ -280,6 +298,9 @@ def _save_step_figure(
         keep_mask = proto_details["keep_mask"]
         scores = proto_details.get("filter_scores", None)
         filter_overlay_next = _filter_heatmap_overlay(img_next, keep_mask, scores=scores)
+    elif filter_mode != "none":
+        # Filter was active but no keep_mask in details (shouldn't happen normally)
+        filter_overlay_next = _filter_heatmap_overlay(img_next, torch.ones(196, dtype=torch.bool))
 
     fig = plt.figure(figsize=(22, 10))
     gs  = GridSpec(
@@ -407,16 +428,18 @@ def _save_step_figure(
                 details = proto_details[0]
                 best_per_proto = details["best_per_proto"].cpu().numpy()  # [K]
                 weighted = details["weighted"].cpu().numpy()              # [K]
+                cnt_np = state_after_i.get("score_count", None)
+                cnt_str = f" cnt={cnt_np[k]:.0f}" if cnt_np is not None else ""
                 if "z" in details:
                     mu_np = details["mu"].cpu().numpy()
                     sigma_np = details["sigma"].cpu().numpy()
                     z_np = details["z"].cpu().numpy()
                     score_str = (
-                        f"s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
+                        f"{cnt_str} s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
                         f"σ={sigma_np[k]:.3f} z={z_np[k]:+.2f} → w={weighted[k]:.4f}"
                     )
                 else:
-                    score_str = f"s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
+                    score_str = f"{cnt_str} s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
                 ax1.text(
                     1.005, 1 - y_frac,
                     score_str,
@@ -425,9 +448,11 @@ def _save_step_figure(
                     color="dimgray",
                 )
 
+    min_count = state_after_i.get("_proto_stats_min_count", "?")
     fig.suptitle(
         f"Step {step}  |  filter_mode={filter_mode!r}  |  "
-        f"n_images_in_state={int(state_after_i['n_images'])}",
+        f"n_images_in_state={int(state_after_i['n_images'])}  |  "
+        f"proto_stats_min_count={min_count}",
         fontsize=11, fontweight="bold",
     )
 
@@ -654,6 +679,7 @@ def _run_mode(
             states[0], tensor_i, encoder, global_feat,
             target_class_idx=0,
         )
+        states[0]["_proto_stats_min_count"] = args.proto_stats_min_count
 
         K = states[0]["centers"].shape[0]
 
@@ -741,7 +767,7 @@ def parse_args():
     p.add_argument("--n-images",     type=int, default=6,
                    help="Number of images / update steps (default: 6).")
     p.add_argument("--filter-modes", nargs="+",
-                   default=["none"],
+                   default=["none", "surgery_with_labels"],
                    choices=["none", "cosine_with_labels", "cosine_no_labels",
                             "surgery_with_labels", "surgery_no_labels"],
                    help="Filter mode(s) to visualise (default: none).")
@@ -752,7 +778,7 @@ def parse_args():
     p.add_argument("--match-threshold",     type=float, default=0.60)
     p.add_argument("--max-k",               type=int,   default=20,
                    help="Max clusters per class (default: 20).")
-    p.add_argument("--aggregation",         default="weighted_mean",
+    p.add_argument("--aggregation",         default="zscore_weighted_mean",
                    choices=["top_m_mean", "max", "sum", "mean",
                             "top_m_mean_plus_mean", "weighted_mean",
                             "zscore_weighted_mean"],
@@ -765,13 +791,13 @@ def parse_args():
                    help="Reference observations before a prototype's z-score is "
                         "trusted (default: 2, vs 10 in production configs — this "
                         "script only walks a few images).")
-    p.add_argument("--filter-threshold",    type=float, default=0.5,
+    p.add_argument("--filter-threshold",    type=float, default=0.7,
                    help="Threshold on normalised [0,1] score for patch filtering (default: 0.5).")
     p.add_argument("--seed",                type=int,   default=42,
                    help="RNG seed for image augmentation.")
 
     # ── Output ────────────────────────────────────────────────────────────────
-    p.add_argument("--output-dir", default="tests/assets/gaussian_debug",
+    p.add_argument("--output-dir", default="outputs/gaussian_debug_0_7",
                    help="Root directory for output figures.")
 
     return p.parse_args()
