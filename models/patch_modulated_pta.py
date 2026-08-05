@@ -36,6 +36,7 @@ FUSION_REGISTRY = {
     "NoQualityGateFusion": ProtoAlphaFusion,  # backward compat alias
 }
 from utils import cls_acc, get_clip_logits
+from utils.records import write_record_header, write_record, write_summary
 
 
 # ------------------------------------------------------------------
@@ -186,6 +187,25 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         C, D       = text_proto.shape
         device     = text_proto.device
 
+        # ── Env-gated per-sample recording (utils/records.py) ──────────────
+        # Behavior-neutral: only reads already-computed values; no-op when
+        # RECORD_DIR is unset/empty.
+        record_dir = os.environ.get("RECORD_DIR", "")
+        seed = int(os.environ.get("SEED") or self.cfg.get("seed", 1))
+        cls_total = [0] * C
+        cls_correct = [0] * C
+        if record_dir:
+            os.makedirs(record_dir, exist_ok=True)
+            write_record_header(
+                method=os.environ.get("RESULT_LABEL", "PatchModulatedPTA"),
+                dataset=dataset_name,
+                seed=seed,
+                C=C,
+                classnames=[],
+                resolved_config=self.cfg,
+            )
+
+
         # ── Dual prototype systems ──────────────────────────────────
         # Image-level (PTA-style)
         refine_feature   = text_embeddings.t().float()   # [C, D]
@@ -285,6 +305,41 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
+                if record_dir:
+                    pred_cls = int(final_logits.argmax(dim=-1).item())
+                    cls_total[int(target.item())] += 1
+                    if acc:
+                        cls_correct[int(target.item())] += 1
+                    write_record(
+                        batch_idx=i,
+                        target=int(target.item()),
+                        pred=pred_cls,
+                        correct=bool(acc),
+                        conf=float(F.softmax(gate_logits, dim=-1).max().item()),
+                        quality_gate=(
+                            float(quality_gate.item())
+                            if torch.is_tensor(quality_gate) else None
+                        ),
+                        gate_mode="multi" if multi_gate else "single",
+                        proto_alpha=proto_alpha.float().cpu().tolist(),
+                        logits={
+                            "clip": clip_logits.squeeze(0).float().cpu().tolist(),
+                            "image_proto": image_proto_logits.squeeze(0).float().cpu().tolist(),
+                            "patch_proto": patch_proto_logits.squeeze(0).float().cpu().tolist(),
+                            "final": final_logits.squeeze(0).float().cpu().tolist(),
+                        },
+                        proto_stats={
+                            "true": {
+                                "n_images": int(states[int(target.item())]["n_images"]),
+                                "n_clusters": int(states[int(target.item())]["centers"].shape[0]),
+                            },
+                            "pred": {
+                                "n_images": int(states[pred_cls]["n_images"]),
+                                "n_clusters": int(states[pred_cls]["centers"].shape[0]),
+                            },
+                        },
+                    )
+
                 pred_conf = F.softmax(gate_logits, dim=-1).squeeze(0)
 
                 if multi_gate:
@@ -314,6 +369,27 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
         final_acc = sum(accuracies) / len(accuracies)
         print(f"---- PatchModulatedPTA FINAL {final_acc:.2f}% ----")
+
+        if record_dir:
+            per_class = {}
+            for c in range(C):
+                total_c = cls_total[c]
+                correct_c = cls_correct[c]
+                per_class["class_{}".format(c)] = {
+                    "total": total_c,
+                    "correct": correct_c,
+                    "acc": (100.0 * correct_c / total_c) if total_c else 0.0,
+                    "n_images_end": int(states[c]["n_images"]),
+                    "n_clusters_end": int(states[c]["centers"].shape[0]),
+                }
+            write_summary(
+                method=os.environ.get("RESULT_LABEL", "PatchModulatedPTA"),
+                dataset=dataset_name,
+                seed=seed,
+                total=len(accuracies),
+                acc=final_acc,
+                per_class=per_class,
+            )
 
         label = os.environ.get("RESULT_LABEL", "PatchModulatedPTA")
         result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
