@@ -1,11 +1,13 @@
 import os
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.fusion import WeightedFusion
 from utils import get_clip_logits, cls_acc
+from utils.records import write_record_header, write_record, write_summary
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROTOTYPE-BASED TEST-TIME ADAPTATION (PTA)
@@ -79,6 +81,23 @@ class PTAAdapter(BaseAdapter):
         """
         os.makedirs("outputs", exist_ok=True)
 
+        # ── ENV-GATED PER-SAMPLE RECORDING (behavior-neutral) ─────────────
+        # When RECORD_DIR is set, write the JSONL header + per-sample records
+        # + summary via utils.records. When unset/empty the writer is a strict
+        # no-op; everything below is skipped entirely so no tensor, RNG, or
+        # loop-order state is perturbed. RESULT_LABEL / SEED only affect the
+        # recorded metadata, never the computation.
+        record_dir = os.environ.get("RECORD_DIR", "").strip()
+        if record_dir:
+            write_record_header(
+                method=os.environ.get("RESULT_LABEL", "PTA"),
+                dataset=dataset_name,
+                seed=int(os.environ.get("SEED", 1)),
+                C=int(text_embeddings.shape[1]),
+                classnames=[],
+                resolved_config=self.cfg,
+            )
+
         with torch.no_grad():
             accuracies = []                                     # Track per-sample accuracy
 
@@ -138,6 +157,26 @@ class PTAAdapter(BaseAdapter):
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
+                # ── RECORD PER-SAMPLE (env-gated, behavior-neutral) ───────
+                if record_dir:
+                    write_record(
+                        batch_idx=i,
+                        target=int(target.item()),
+                        pred=int(final_logits.argmax(dim=-1).item()),
+                        correct=bool(acc),
+                        conf=float(F.softmax(final_logits, dim=-1).max().item()),
+                        quality_gate=None,
+                        gate_mode=None,
+                        proto_alpha=None,
+                        logits={
+                            "clip": clip_logits.squeeze(0).float().cpu().tolist(),
+                            "image_proto": image_proto_logits.squeeze(0).float().cpu().tolist(),
+                            "patch_proto": None,
+                            "final": final_logits.squeeze(0).float().cpu().tolist(),
+                        },
+                        proto_stats={"true": None, "pred": None},
+                    )
+
                 # Periodic logging (every 1000 samples)
                 if i % 1000 == 0:
                     print(
@@ -148,6 +187,17 @@ class PTAAdapter(BaseAdapter):
         # ── FINAL RESULTS ──────────────────────────────────────────────────
         final_acc = sum(accuracies) / len(accuracies)
         print(f"---- PTA's test accuracy: {final_acc:.2f}. ----\n")
+
+        # ── SUMMARY (env-gated, behavior-neutral) ──────────────────────────
+        if record_dir:
+            write_summary(
+                method=os.environ.get("RESULT_LABEL", "PTA"),
+                dataset=dataset_name,
+                seed=int(os.environ.get("SEED", 1)),
+                total=len(accuracies),
+                acc=final_acc,
+                per_class={},
+            )
 
         # Append results to output file (append mode, multiple runs accumulate)
         label = os.environ.get("RESULT_LABEL", "PTA")
