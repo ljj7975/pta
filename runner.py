@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from utils import get_config_file, build_test_data_loader, clip_classifier, get_imagenet_subset_remap
+from utils.data import build_subset_test_data_loader
 from encoder import create_encoder_instance
 
 
@@ -57,6 +58,16 @@ def get_arguments():
         type=str,
         default="./data",
         help="Root directory that contains all dataset folders.",
+    )
+    parser.add_argument(
+        "--class-file",
+        dest="class_file",
+        type=str,
+        default=None,
+        help=(
+            "Path to a file with one classname per line; builds a closed-set "
+            "subset loader (see build_subset_test_data_loader)."
+        ),
     )
     parser.add_argument(
         "--clip-model",
@@ -154,6 +165,11 @@ def load_adapter_module(method: str):
 def main():
     args = get_arguments()
 
+    if args.class_file is not None and not os.path.isfile(args.class_file):
+        raise FileNotFoundError(
+            f"--class-file not found: {args.class_file}"
+        )
+
     # ------------------------------------------------------------------ setup
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -188,6 +204,8 @@ def main():
         print(f"\n{'='*60}")
         print(f"  Dataset : {dataset_name}")
         print(f"  Method  : {args.method}")
+        if args.class_file is not None:
+            print(f"  Subset mode : {args.class_file}")
         print(f"{'='*60}")
 
         cfg = get_config_file(args.config, dataset_name)
@@ -199,9 +217,14 @@ def main():
         # (prototypes, caches, etc.) never leaks across datasets.
         adapter = adapter_module.build(cfg)
 
-        test_loader, classnames, template = build_test_data_loader(
-            dataset_name, args.data_root, preprocess, shuffle=True
-        )
+        if args.class_file is not None:
+            test_loader, classnames, template = build_subset_test_data_loader(
+                dataset_name, args.data_root, preprocess, class_file=args.class_file
+            )
+        else:
+            test_loader, classnames, template = build_test_data_loader(
+                dataset_name, args.data_root, preprocess, shuffle=True
+            )
         text_embeddings = clip_classifier(classnames, template, encoder)
 
         acc = adapter.run(test_loader, encoder, text_embeddings, dataset_name)
