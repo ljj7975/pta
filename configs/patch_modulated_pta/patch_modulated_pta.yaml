@@ -4,11 +4,13 @@ defaults:
   - ../base
 
 patch_level:
+  appearance_min_weight: 0.25
+  multi_gate: true
+  conf_threshold: 0.3
   conf_margin_threshold: 0.00
   aug_copies: 15
-  patch_filter_mode: none          # none | cosine_with_labels | cosine_no_labels | surgery_with_labels | surgery_no_labels
-  patch_filter_threshold: 0.5      # absolute threshold on normalised [0,1] score
+  patch_filter_mode: surgery_with_labels          # none | cosine_with_labels | cosine_no_labels | surgery_with_labels | surgery_no_labels
 
 fusion:
   tau_image_proto: 80.0
-  tau_patch_proto: 20.0
+  tau_patch_proto: 10.0

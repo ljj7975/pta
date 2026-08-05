@@ -9,6 +9,7 @@ import torch
 
 from utils.clip_inference import _safe_normalize
 from utils.proto_stats import zscore as _zscore
+from utils.proto_stats import zscore_cdf as _zscore_cdf
 
 
 def _incremental_kmeans_step(
@@ -140,6 +141,7 @@ def _gaussian_score_for_class(
     proto_sigma: Optional[torch.Tensor] = None,
     proto_valid: Optional[torch.Tensor] = None,
     sigma_eps: float = 1e-6,
+    appearance_min_weight: float = 0.0,
 ) -> torch.Tensor:
     """
     Score one class using Gaussian prototype similarity.
@@ -149,12 +151,22 @@ def _gaussian_score_for_class(
 
     Then apply one-to-one assignment (same as MPTA) and top-M aggregation.
 
-    The ``zscore_*`` aggregations first normalize each prototype's raw score
-    against that prototype's own reference distribution (``proto_mu`` /
-    ``proto_sigma``, maintained online by utils.proto_stats), so that scores from
-    prototypes with different natural score ranges become comparable. They
-    require ``proto_mu``/``proto_sigma``/``proto_valid``; without them the call
-    falls back to the raw-score path.
+    **z-score normalisation** (``aggregation.startswith("zscore")``):
+    Replaces each prototype's raw Gaussian score with a value derived from its
+    z-score under the prototype's own reference distribution.  Both modes use
+    an **appearance-weighted sum** over surviving prototypes:
+      - ``zscore``             — raw signed z-score ``(raw - mu) / sigma``.
+                                ``score = Σ w_norm_k × z_k``
+      - ``zscore_cdf``         — Φ(z) (CDF of the z-score).
+                                ``score = Σ w_norm_k × Φ(z_k)``
+    Requires ``proto_mu``/``proto_sigma``/``proto_valid``; without them the
+    call falls back to the raw-score path.
+
+    **Appearance filtering** (``appearance_min_weight > 0``):
+    Prototypes whose appearance weight (appeared_count / total_count) is below
+    *appearance_min_weight* are excluded from the score entirely — their
+    ``best_per_proto`` and ``app_w`` are both zeroed so they contribute nothing
+    and do not dilute the weighted-sum denominator.
 
     Returns a scalar score for this class.
     """
@@ -164,10 +176,14 @@ def _gaussian_score_for_class(
         if return_details:
             K0 = centers_norm.shape[0]
             zeros = torch.zeros(K0, device=centers_norm.device)
+            # No patches → no groups formed → no prototype won any group
+            proto_to_group = torch.full((K0,), -1, dtype=torch.long, device=centers_norm.device)
             return empty, {
                 "best_per_proto": zeros,
                 "weighted": zeros.clone(),
                 "app_w": zeros.clone(),
+                "proto_group_idx": proto_to_group,  # all -1 (none won)
+                "group_members": [],                  # no groups
             }
         return empty
 
@@ -224,6 +240,7 @@ def _gaussian_score_for_class(
     used_groups = torch.zeros(num_groups, dtype=torch.bool, device=gaussian_scores.device)
 
     best_per_proto = torch.zeros(K, device=gaussian_scores.device)
+    proto_to_group = torch.full((K,), -1, dtype=torch.long, device=gaussian_scores.device)
     for proto_idx in proto_order.tolist():
         scores = gaussian_scores[:, proto_idx].clone()
         scores[used_groups] = float("-inf")
@@ -232,38 +249,94 @@ def _gaussian_score_for_class(
             continue
         best_per_proto[proto_idx] = best_val
         used_groups[group_idx] = True
+        proto_to_group[proto_idx] = group_idx
 
     # ── Appearance weighting and top-M aggregation ─────────────────────────
     denom = max(float(update_samples), 1e-6)
     app_w = appearance / denom
+
+    # Optional filter: exclude prototypes that appear too infrequently.
+    # Low appearance weight → unreliable prototype → zero its contribution.
+    if appearance_min_weight > 0:
+        low_weight = app_w < appearance_min_weight
+        if low_weight.any():
+            # Clone to avoid mutating caller's tensors (appearance / best_per_proto
+            # are shared references into the state dict).
+            best_per_proto = best_per_proto.clone()
+            app_w = app_w.clone()
+            best_per_proto[low_weight] = 0.0
+            app_w[low_weight] = 0.0
+            del low_weight
+
     weighted = best_per_proto * app_w  # [K]
 
     k = min(top_m, weighted.numel())
 
-    # ── Z-score normalization (optional) ───────────────────────────────────
-    # Convert each prototype's raw score into a prototype-specific z-score, then
-    # aggregate with appearance weights normalized to sum to 1 within the class.
-    # This makes class scores comparable even when classes hold different
-    # numbers of prototypes with different natural score ranges.
+    # ── Per-prototype score normalisation (optional) ────────────────────────
+    # Replace each prototype's raw Gaussian score with a value derived from
+    # its z-score under the prototype's own reference distribution.
+    #
+    # Two modes:
+    #   zscore                — raw signed z-score ``(raw - mu) / sigma``.
+    #                           Unbounded, preserves directional information.
+    #                           Aggregated by **appearance-weighted sum**
+    #                           (``w_norm × z``) — prototypes seen more often
+    #                           contribute more to the class score.
+    #
+    #   zscore_cdf            — Φ(z).  CDF of the z-score, bounded to (0, 1].
+    #                           Aggregated by **appearance-weighted sum**
+    #                           (``w_norm × Φ(z)``).
+    #
+    # Prototypes without enough reference observations (proto_valid=False) fall
+    # back to the raw score (range [0, 1]) for both modes — same range as
+    # Φ(z) and a reasonable proxy for cold-start z-scores.
     z = None
     w_norm = None
     if aggregation.startswith("zscore") and proto_mu is not None:
-        z = _zscore(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
-        w_norm = app_w / app_w.sum().clamp(min=1e-6)
-        z_weighted = w_norm * z  # [K]
+        if aggregation == "zscore":
+            z = _zscore(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
+            # Cold-start fallback: raw score in [0, 1] as proxy z-score.
+            if proto_valid is not None:
+                z = torch.where(proto_valid, z, best_per_proto)
+            # Zero out unmatched + low-appearance prototypes.
+            z = torch.where(best_per_proto > 0, z, torch.zeros_like(z))
+            # Appearance-weighted sum: w_norm × z.
+            # Prototypes seen more often contribute more — appearance count is a
+            # reliable proxy for prototype maturity and discriminative power.
+            w_norm = app_w / app_w.sum().clamp(min=1e-6)
+            z_weighted = w_norm * z
+            score = z_weighted.sum()
 
-        # "zscore_weighted_mean" — the weighted mean z-score
-        score = z_weighted.sum()
+        elif aggregation == "zscore_cdf":
+            z = _zscore_cdf(best_per_proto, proto_mu, proto_sigma, proto_valid, sigma_eps)
+            # Cold-start fallback: raw score in [0, 1] — same range as Φ(z),
+            # fair substitute for immature prototypes.
+            if proto_valid is not None:
+                z = torch.where(proto_valid, z, best_per_proto)
+            # Zero out unmatched + low-appearance prototypes.
+            z = torch.where(best_per_proto > 0, z, torch.zeros_like(z))
+            # Appearance-weighted sum: w_norm × Φ(z).
+            w_norm = app_w / app_w.sum().clamp(min=1e-6)
+            z_weighted = w_norm * z
+            score = z_weighted.sum()
+
+        else:
+            raise ValueError(
+                f"Unknown zscore aggregation {aggregation!r}. "
+                f"Expected 'zscore' or 'zscore_cdf'."
+            )
 
         if return_details:
             return score, {
-                "best_per_proto": best_per_proto,  # [K] raw score, kept for comparison
-                "weighted": z_weighted,            # [K] normalized-weight × z
-                "app_w": app_w,                    # [K] raw appearance weights
+                "best_per_proto": best_per_proto,  # [K] raw Gaussian score
+                "weighted": z_weighted,            # [K] final per-proto contribution
+                "app_w": app_w,                    # [K] appearance weights
                 "mu": proto_mu,                    # [K] reference mean
                 "sigma": proto_sigma,              # [K] reference std
-                "z": z,                            # [K] prototype-specific z-score
+                "z": z,                            # [K] normalised score (z or CDF)
                 "w_norm": w_norm,                  # [K] appearance weights, sum to 1
+                "proto_group_idx": proto_to_group, # [K] which group each proto won, -1 = none
+                "group_members": group_members,    # list[G] of [M] patch indices per group
             }
         return score
 
@@ -291,5 +364,7 @@ def _gaussian_score_for_class(
             "best_per_proto": best_per_proto,   # [K] Gaussian score per prototype (before weighting)
             "weighted": weighted,               # [K] after appearance weighting
             "app_w": app_w,                     # [K] appearance weights
+            "proto_group_idx": proto_to_group,  # [K] which group each proto won, -1 = none
+            "group_members": group_members,     # list[G] of [M] patch indices per group
         }
     return score

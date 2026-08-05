@@ -193,18 +193,19 @@ class GaussianPatchLevel(BasePatchLevel):
         quality_eps = float(self._cfg.get("quality_eps", 1e-3))
         patch_group_threshold = float(self._cfg.get("patch_group_threshold", 0.9))
         variance_min = float(self._cfg.get("variance_min", 0.001))
-        aggregation = str(self._cfg.get("aggregation", "weighted_mean"))
+        aggregation = str(self._cfg.get("aggregation", "zscore"))
 
         # ── Prototype score statistics ────────────────────────────────────────
-        stats_min_count  = int(self._cfg.get("proto_stats_min_count", 10))
+        stats_min_count  = int(self._cfg.get("proto_stats_min_count", 5))
         stats_sigma_eps  = float(self._cfg.get("proto_stats_sigma_eps", 1e-6))
         stats_sigma_warn = float(self._cfg.get("proto_stats_sigma_warn", 1e-4))
-        stats_log_every  = int(self._cfg.get("proto_stats_log_every", 0))
+        stats_log_every         = int(self._cfg.get("proto_stats_log_every", 0))
+        appearance_min_weight   = float(self._cfg.get("appearance_min_weight", 0.0))
         # proto_stats_mode controls how stale-center bias is mitigated:
         #   "ema"              — exponential decay on counts/sums
-        #   "center_aware"     — gate validity by cosine drift from stored center (default)
-        #   "ema_center_aware" — both corrections together
-        stats_mode          = str(self._cfg.get("proto_stats_mode", "center_aware"))
+        #   "center_aware"     — gate validity by cosine drift from stored center
+        #   "ema_center_aware" — both corrections together (default)
+        stats_mode          = str(self._cfg.get("proto_stats_mode", "ema_center_aware"))
         stats_ema_decay     = float(self._cfg.get("proto_stats_ema_decay", 0.99))
         stats_center_decay  = float(self._cfg.get("proto_stats_center_decay", 0.95))
         stats_use_ema       = stats_mode in ("ema", "ema_center_aware")
@@ -279,6 +280,7 @@ class GaussianPatchLevel(BasePatchLevel):
                     proto_sigma=proto_sigma,
                     proto_valid=proto_valid,
                     sigma_eps=stats_sigma_eps,
+                    appearance_min_weight=appearance_min_weight,
                 )
                 if want_details:
                     raw_proto[c], per_class_details[c] = result

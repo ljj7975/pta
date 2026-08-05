@@ -7,7 +7,7 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-29
+#SBATCH --array=0-39
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_benchmark_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_benchmark_%x-%A_%a.err
 
@@ -60,7 +60,7 @@ N_DS=${#DATASETS[@]}
 # ---------------------------------------------------------------------------
 # Experiment registry
 #
-# exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL
+# exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL [OVERRIDE]
 #
 # Comment/uncomment individual lines to enable/disable experiments.
 # ---------------------------------------------------------------------------
@@ -69,6 +69,7 @@ _CONFIG_DIRS=()
 _CLIP_MODELS=()
 _CLIP_CHECKPOINTS=()
 _EXP_LABELS=()
+_OVERRIDES=()
 
 exp() {
     _METHODS+=("$1")
@@ -76,17 +77,20 @@ exp() {
     _CLIP_MODELS+=("$3")
     _CLIP_CHECKPOINTS+=("$4")
     _EXP_LABELS+=("$5")
+    _OVERRIDES+=("${6:-}")
 }
 
 # ── CLIPSurgery ──────────────────────────────────────────────────────
-exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CS-2"
-exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CS-2"
-exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CS-2"
+exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CS"
+exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CS"
+exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PMP-CS"
+exp diagnostic_pta      configs/diagnostic_pta        clip_surgery    ""                           "PatchOnly-CS"
 
 # ── Regular CLIP ────────────────────────────────────────────────────
-exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP-2"
-exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP-2"
-exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP-2"
+exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP"
+exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP"
+exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PMP-CLIP"
+exp diagnostic_pta      configs/diagnostic_pta        clip            ""                           "PatchOnly-CLIP"
 
 # ---------------------------------------------------------------------------
 # Derived values
@@ -96,6 +100,7 @@ CONFIG_DIRS=("${_CONFIG_DIRS[@]}")
 CLIP_MODELS=("${_CLIP_MODELS[@]}")
 CLIP_CHECKPOINTS=("${_CLIP_CHECKPOINTS[@]}")
 EXP_LABELS=("${_EXP_LABELS[@]}")
+OVERRIDES=("${_OVERRIDES[@]}")
 
 N_EXP=${#METHODS[@]}
 N_TOTAL=$((N_EXP * N_DS))
@@ -147,5 +152,8 @@ CMD=(python -u runner.py
 if [[ -n "$CLIP_CKPT" ]]; then
     CMD+=(--clip-checkpoint "$CLIP_CKPT")
 fi
+
+OVERRIDE=${OVERRIDES[$exp_idx]}
+if [[ -n "$OVERRIDE" ]]; then CMD+=(--override "$OVERRIDE"); fi
 
 "${CMD[@]}"

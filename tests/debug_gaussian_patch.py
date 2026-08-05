@@ -125,55 +125,89 @@ def _crops_strip(image_np: np.ndarray, assignments, K: int,
                  sims: np.ndarray = None,
                  max_per_cluster: int = 5, cell: int = 32,
                  state_after_i: dict = None, tensors: list = None,
-                 keep_mask: np.ndarray = None) -> np.ndarray:
+                 keep_mask: np.ndarray = None,
+                 show_rep: bool = True,
+                 proto_details: dict = None) -> np.ndarray:
     """
     Build a [K × (cell+6), W, 3] uint8 canvas.
 
     Each row = one cluster:
-      [4px color stripe] [top-3 rep patches with border] [gap] [patch crops from current image]
+      [4px color stripe] [optional: rep patches with border] [gap] [patch crops from image]
 
-    keep_mask: [196] bool array — when provided, only show patches where True.
+    When proto_details provides ``proto_group_idx`` and ``group_members`` (from the
+    one-to-one assignment in _gaussian_score_for_class), those are used to show
+    *only* the patches that each prototype actually won, rather than the argmax
+    assignment.  Prototypes that won no group get an empty row.
+
+    keep_mask  : [196] bool array — when provided, only show patches where True.
+    show_rep   : if False, skip the representative-patch block (use for test-image strips).
     """
-    if assignments is None or K == 0:
+    if (assignments is None or K == 0) and proto_details is None:
         return np.full((cell, cell, 3), 200, dtype=np.uint8)
 
     row_h = cell + 6
     col_w = cell + 2
     n_rep = 5
-    rep_block_w = n_rep * (cell + 2) + 4
+    rep_block_w = n_rep * (cell + 2) + 4 if show_rep else 0
     canvas = np.full((K * row_h, rep_block_w + 4 + max_per_cluster * col_w, 3), 240, dtype=np.uint8)
 
-    top_rep = state_after_i.get("top_rep_patches", []) if state_after_i else []
+    top_rep = state_after_i.get("top_rep_patches", []) if (state_after_i and show_rep) else []
+
+    # Check if one-to-one assignment info is available
+    use_one2one = (proto_details is not None
+                   and "proto_group_idx" in proto_details
+                   and "group_members" in proto_details)
+    if use_one2one:
+        proto_group_idx = proto_details["proto_group_idx"]  # [K] long, -1 = none
+        group_members = proto_details["group_members"]       # list of tensors
 
     for k in range(K):
         ry = k * row_h
         canvas[ry:ry + row_h, :4] = (_rgb(k) * 255).astype(np.uint8)
 
-        entries = top_rep[k] if k < len(top_rep) else []
-        border_color = (_rgb(k) * 255).astype(np.uint8)
+        # Representative patches (only when show_rep=True)
+        if show_rep:
+            entries = top_rep[k] if k < len(top_rep) else []
+            border_color = (_rgb(k) * 255).astype(np.uint8)
 
-        for j, (rpidx, rimgidx, _) in enumerate(entries[:n_rep]):
-            if rpidx >= 0 and rimgidx >= 0 and tensors is not None and rimgidx < len(tensors):
-                rep_img = _denorm(tensors[rimgidx].squeeze(0))
-                r, c = int(rpidx) // GRID, int(rpidx) % GRID
-                raw = rep_img[r * PSIZE:(r + 1) * PSIZE, c * PSIZE:(c + 1) * PSIZE]
-                thumb = np.array(PilImage.fromarray(raw).resize((cell, cell), PilImage.NEAREST))
-                thumb[:2, :] = border_color
-                thumb[-2:, :] = border_color
-                thumb[:, :2] = border_color
-                thumb[:, -2:] = border_color
-                y = ry + 3
-                x = 4 + j * (cell + 2) + 1
-                canvas[y:y + cell, x:x + cell] = thumb
+            for j, (rpidx, rimgidx, _) in enumerate(entries[:n_rep]):
+                if rpidx >= 0 and rimgidx >= 0 and tensors is not None and rimgidx < len(tensors):
+                    rep_img = _denorm(tensors[rimgidx].squeeze(0))
+                    r, c = int(rpidx) // GRID, int(rpidx) % GRID
+                    raw = rep_img[r * PSIZE:(r + 1) * PSIZE, c * PSIZE:(c + 1) * PSIZE]
+                    thumb = np.array(PilImage.fromarray(raw).resize((cell, cell), PilImage.NEAREST))
+                    thumb[:2, :] = border_color
+                    thumb[-2:, :] = border_color
+                    thumb[:, :2] = border_color
+                    thumb[:, -2:] = border_color
+                    y = ry + 3
+                    x = 4 + j * (cell + 2) + 1
+                    canvas[y:y + cell, x:x + cell] = thumb
 
-        patch_indices = np.where(assignments == k)[0]
-        if keep_mask is not None:
-            patch_indices = patch_indices[keep_mask[patch_indices]]
-        if sims is not None and k < sims.shape[1]:
-            patch_sims = sims[patch_indices, k]
-            sorted_order = np.argsort(-patch_sims)
-            patch_indices = patch_indices[sorted_order]
-        patch_indices = patch_indices[:max_per_cluster]
+        # Determine which patches to show — one-to-one or argmax
+        if use_one2one:
+            gidx = int(proto_group_idx[k].item())
+            if gidx >= 0 and gidx < len(group_members):
+                patch_indices = group_members[gidx].cpu().numpy()
+                # When a filter is active, _gaussian_score_for_class receives only
+                # the filtered patches, so group_member indices are into the
+                # filtered set [0..P_filtered−1].  Remap to original 0-195 indices.
+                if keep_mask is not None:
+                    orig_idx = np.where(keep_mask)[0]
+                    patch_indices = orig_idx[patch_indices]
+                patch_indices = patch_indices[:max_per_cluster]
+            else:
+                patch_indices = np.array([], dtype=np.int64)
+        else:
+            patch_indices = np.where(assignments == k)[0]
+            if keep_mask is not None:
+                patch_indices = patch_indices[keep_mask[patch_indices]]
+            if sims is not None and k < sims.shape[1]:
+                patch_sims = sims[patch_indices, k]
+                sorted_order = np.argsort(-patch_sims)
+                patch_indices = patch_indices[sorted_order]
+            patch_indices = patch_indices[:max_per_cluster]
+
         for j, pidx in enumerate(patch_indices):
             r, c = int(pidx) // GRID, int(pidx) % GRID
             raw = image_np[r * PSIZE:(r + 1) * PSIZE, c * PSIZE:(c + 1) * PSIZE]
@@ -261,11 +295,13 @@ def _save_step_figure(
     """
     Produce one combined figure for step i.
 
-    Layout (2 rows × 3 cols):
+    Layout (3 rows):
       [0,0] image_i with cluster overlay      (what update_state absorbed)
       [0,1] image_{i+1} with cluster overlay  (how next image maps to current state)
       [0,2] image_{i+1} with filter heatmap   (which patches the filter keeps for scoring)
-      [1, :] patch crops from image_i, one row per cluster
+      [0,3] patch_proto_logits bar chart
+      [1, :] patch crops from image_i, one row per cluster  (left labels: n, app, w)
+      [2, :] patch crops from image_{i+1}, one row per cluster  (right labels: cnt, s, mu, sigma, z, w)
     """
     K = state_after_i["centers"].shape[0]
 
@@ -273,7 +309,7 @@ def _save_step_figure(
     img_next = _denorm(tensor_next.squeeze(0))
 
     assign_i, sims_i    = _assign_all_patches(tensor_i,    state_after_i, encoder)
-    assign_next, _      = _assign_all_patches(tensor_next, state_after_i, encoder)
+    assign_next, sims_next = _assign_all_patches(tensor_next, state_after_i, encoder)
 
     # Keep masks for graying out filtered patches in cluster overlays
     km_i = state_after_i.get("keep_mask", None)
@@ -287,10 +323,16 @@ def _save_step_figure(
     overlay_i    = _assignment_overlay(img_i,    assign_i,    K, keep_mask=km_i_np)
     overlay_next = _assignment_overlay(img_next, assign_next, K, keep_mask=km_next_np)
 
-    km_np = km_i_np  # alias for crops_strip (uses image_i's mask)
-    strip        = _crops_strip(img_i, assign_i, K, sims=sims_i,
-                                state_after_i=state_after_i, tensors=tensors,
-                                keep_mask=km_np)
+    # Two crops strips: one for image_i (with rep patches), one for image_{i+1} (no rep patches)
+    # Row 2 uses the one-to-one assignment from proto_details when available,
+    # so the strip matches the actual scoring logic, not the argmax overlay.
+    strip_i = _crops_strip(img_i, assign_i, K, sims=sims_i,
+                           state_after_i=state_after_i, tensors=tensors,
+                           keep_mask=km_i_np, show_rep=True)
+    details_0 = proto_details[0] if proto_details is not None and 0 in proto_details else None
+    strip_next = _crops_strip(img_next, assign_next, K, sims=sims_next,
+                              keep_mask=km_next_np, show_rep=False,
+                              proto_details=details_0)
 
     # Filter heatmap for test image (image_{i+1})
     filter_overlay_next = img_next.copy()
@@ -302,12 +344,12 @@ def _save_step_figure(
         # Filter was active but no keep_mask in details (shouldn't happen normally)
         filter_overlay_next = _filter_heatmap_overlay(img_next, torch.ones(196, dtype=torch.bool))
 
-    fig = plt.figure(figsize=(22, 10))
+    fig = plt.figure(figsize=(22, 14))
     gs  = GridSpec(
-        2, 4, figure=fig,
-        height_ratios=[1.1, 1.4],
+        3, 4, figure=fig,
+        height_ratios=[1.1, 1.4, 1.4],
         width_ratios=[1, 1, 1, 1.3],
-        hspace=0.50, wspace=0.30,
+        hspace=0.55, wspace=0.30,
     )
 
     # ── [0,0] image_i with cluster overlay ───────────────────────────────────
@@ -331,8 +373,8 @@ def _save_step_figure(
     ax01 = fig.add_subplot(gs[0, 1])
     ax01.imshow(overlay_next)
     ax01.set_title(
-        f"image_{step + 1}  →  compute_patch_logits\n"
-        f"(scored against state from step {step})",
+        f"image_{step + 1}  →  argmax overlay\n"
+        f"(each patch → nearest prototype from step {step})",
         fontsize=9,
     )
     ax01.axis("off")
@@ -392,24 +434,23 @@ def _save_step_figure(
                 f"{v:.3f}", ha="center", va="bottom", fontsize=7,
             )
 
-    # ── [1, :] crops strip ────────────────────────────────────────────────────
+    # ── [1, :] crops strip for image_i ────────────────────────────────────────
     ax1 = fig.add_subplot(gs[1, :])
-    ax1.imshow(strip)
+    ax1.imshow(strip_i)
     ax1.set_title(
         f"Patch crops from image_{step} grouped by cluster  "
         f"[filter_mode={filter_mode!r}]",
         fontsize=9,
     )
     ax1.axis("off")
-    # Cluster labels on left (with appearance count / n_images and weight)
-    # Per-prototype scores on right (from compute_patch_logits details)
+    # Left labels: prototype state info (n_patches, appearance, weight)
     if K > 0 and assign_i is not None:
         row_h = 32 + 6
         n_images = int(state_after_i["n_images"])
         appearances = state_after_i["appearance"].cpu().numpy()
-        km = km_np  # keep_mask from outer scope (already numpy)
+        km = km_i_np
         for k in range(K):
-            y_frac = ((k * row_h + row_h / 2) / strip.shape[0])
+            y_frac = ((k * row_h + row_h / 2) / strip_i.shape[0])
             if km is not None:
                 n_patches = int(((assign_i == k) & km).sum())
             else:
@@ -423,30 +464,43 @@ def _save_step_figure(
                 fontsize=7, va="center", ha="right",
                 color=_CMAP[k % 20][:3],
             )
-            # Per-prototype scores on the right side
-            if proto_details is not None and 0 in proto_details:
-                details = proto_details[0]
-                best_per_proto = details["best_per_proto"].cpu().numpy()  # [K]
-                weighted = details["weighted"].cpu().numpy()              # [K]
-                cnt_np = state_after_i.get("score_count", None)
-                cnt_str = f" cnt={cnt_np[k]:.0f}" if cnt_np is not None else ""
-                if "z" in details:
-                    mu_np = details["mu"].cpu().numpy()
-                    sigma_np = details["sigma"].cpu().numpy()
-                    z_np = details["z"].cpu().numpy()
-                    score_str = (
-                        f"{cnt_str} s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
-                        f"σ={sigma_np[k]:.3f} z={z_np[k]:+.2f} → w={weighted[k]:.4f}"
-                    )
-                else:
-                    score_str = f"{cnt_str} s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
-                ax1.text(
-                    1.005, 1 - y_frac,
-                    score_str,
-                    transform=ax1.transAxes,
-                    fontsize=6, va="center", ha="left",
-                    color="dimgray",
+
+    # ── [2, :] crops strip for image_{i+1} ────────────────────────────────────
+    ax2 = fig.add_subplot(gs[2, :])
+    ax2.imshow(strip_next)
+    ax2.set_title(
+        f"Patch crops from image_{step + 1} by one-to-one assignment  "
+        f"[scored against state from step {step}]",
+        fontsize=9,
+    )
+    ax2.axis("off")
+    # Right labels: scoring stats (cnt, s, mu, sigma, z, w)
+    if K > 0 and assign_next is not None and proto_details is not None and 0 in proto_details:
+        row_h = 32 + 6
+        details = proto_details[0]
+        best_per_proto = details["best_per_proto"].cpu().numpy()  # [K]
+        weighted = details["weighted"].cpu().numpy()              # [K]
+        cnt_np = state_after_i.get("score_count", None)
+        for k in range(K):
+            y_frac = ((k * row_h + row_h / 2) / strip_next.shape[0])
+            cnt_str = f" cnt={cnt_np[k]:.0f}" if cnt_np is not None else ""
+            if "z" in details:
+                mu_np = details["mu"].cpu().numpy()
+                sigma_np = details["sigma"].cpu().numpy()
+                z_np = details["z"].cpu().numpy()
+                score_str = (
+                    f"{cnt_str} s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
+                    f"σ={sigma_np[k]:.3f} n={z_np[k]:.4f} → w={weighted[k]:.4f}"
                 )
+            else:
+                score_str = f"{cnt_str} s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
+            ax2.text(
+                1.005, 1 - y_frac,
+                score_str,
+                transform=ax2.transAxes,
+                fontsize=6, va="center", ha="left",
+                color="dimgray",
+            )
 
     min_count = state_after_i.get("_proto_stats_min_count", "?")
     fig.suptitle(
@@ -611,11 +665,11 @@ def _print_proto_table(proto_details: dict, raw_proto, class_names: list):
         name = class_names[c] if c < len(class_names) else f"class_{c}"
         print(f"    class {c} ({name}):")
         if has_z and z is not None:
-            print("      proto |  raw_score |      mu |   sigma |  z_score |  app_w | norm_w")
+            print("      proto |  raw_score |      mu |   sigma |  norm_sc |  app_w | norm_w")
             for k in range(bpp.shape[0]):
                 print(
                     f"      {k:5d} | {bpp[k]:10.6f} | {mu[k]:7.4f} | {sigma[k]:7.4f} | "
-                    f"{z[k]:8.3f} | {apw[k]:6.3f} | {w_norm[k]:6.3f}"
+                    f"{z[k]:8.4f} | {apw[k]:6.3f} | {w_norm[k]:6.3f}"
                 )
         else:
             print("      proto |  raw_score |  app_w | weighted")
@@ -778,13 +832,14 @@ def parse_args():
     p.add_argument("--match-threshold",     type=float, default=0.60)
     p.add_argument("--max-k",               type=int,   default=20,
                    help="Max clusters per class (default: 20).")
-    p.add_argument("--aggregation",         default="zscore_weighted_mean",
+    p.add_argument("--aggregation",         default="zscore_cdf",
                    choices=["top_m_mean", "max", "sum", "mean",
                             "top_m_mean_plus_mean", "weighted_mean",
-                            "zscore_weighted_mean"],
-                   help="Prototype-score aggregation (default: weighted_mean). "
-                        "The zscore_* variants normalise each prototype against "
-                        "its own reference distribution before aggregating.")
+                            "zscore_pdf", "zscore_cdf", "zscore_cdf_modulated"],
+                   help="Prototype-score aggregation (default: zscore_cdf). "
+                        "zscore_cdf = pure CDF (cross-class comparable); "
+                        "zscore_cdf_modulated = raw × CDF (hybrid); "
+                        "zscore_pdf = raw × exp(-0.5*z^2).")
     p.add_argument("--top-m",               type=int,   default=4,
                    help="M for the top_m_* aggregations (default: 4).")
     p.add_argument("--proto-stats-min-count", type=int, default=2,

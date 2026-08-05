@@ -1,10 +1,10 @@
-"""Per-prototype running score statistics for z-score normalization.
+"""Per-prototype running score statistics for score normalization.
 
 Prototypes are built independently per class, so each one has its own natural
 score distribution: a Gaussian score of 0.8 may be routine for a permissive
 prototype and exceptional for a picky one. These helpers maintain a reference
 distribution per prototype so raw scores can be converted to prototype-specific
-z-scores before class-level aggregation.
+normalized scores before class-level aggregation.
 
 The reference distribution is built **online** from the test stream. There is no
 train split in this codebase (every dataset exposes only `test`), so the caller
@@ -216,9 +216,117 @@ def zscore(
 
     Prototypes without enough reference observations abstain at 0.0 (the
     "typical" value on the z scale) rather than contributing noise.
+
+    .. note::
+       Raw z-scores can be negative (below the prototype's mean), which makes
+       them unsuitable for weighted-sum aggregation where negative contributions
+       penalize the class score.  Prefer :func:`zscore_cdf` or
+       :func:`zscore_abs` for classification.
+    """
+    import math
+    z = (raw - mu) / sigma.clamp(min=sigma_eps)
+    return torch.where(valid, z, torch.zeros_like(z))
+
+
+def zscore_cdf(
+    raw: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
+    valid: torch.Tensor,
+    sigma_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Convert raw prototype scores to their normal-CDF percentiles.
+
+    ``score_i = Φ(z_i)`` where ``z_i = (raw_i - mu_i) / max(sigma_i, eps)``
+    and ``Φ`` is the standard-normal cumulative distribution function.
+
+    Maps z ∈ (−∞, +∞) → (0, 1):
+      - z = −3 → 0.001  (terrible match)
+      - z =  0 → 0.500  (at the prototype's historical mean)
+      - z = +3 → 0.999  (excellent match)
+
+    This preserves cross-prototype comparability (same z → same Φ(z)) while
+    guaranteeing non-negative scores suitable for weighted-sum aggregation.
+    Prototypes without enough reference observations abstain at 0.0.
+    """
+    import math
+    z = (raw - mu) / sigma.clamp(min=sigma_eps)
+    cdf = 0.5 * (1.0 + torch.erf(z * (math.sqrt(0.5))))
+    return torch.where(valid, cdf, torch.zeros_like(cdf))
+
+
+def zscore_abs(
+    raw: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
+    valid: torch.Tensor,
+    sigma_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Convert raw prototype scores to absolute z-scores (magnitude only).
+
+    ``score_i = |z_i|`` where ``z_i = (raw_i - mu_i) / max(sigma_i, eps)``.
+
+    Always non-negative.  A score of 0 means the raw score equals the
+    prototype's historical mean; larger values indicate stronger deviation
+    (in either direction).  This discards directional information and treats
+    above-mean and below-mean deviations symmetrically — useful when any
+    strong deviation from the prototype's typical behaviour is informative.
+    Prototypes without enough reference observations abstain at 0.0.
+    """
+    z = (raw - mu) / sigma.clamp(min=sigma_eps)
+    return torch.where(valid, z.abs(), torch.zeros_like(z))
+
+
+def zscore(
+    raw: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
+    valid: torch.Tensor,
+    sigma_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Raw signed z-score: ``z_i = (raw_i - mu_i) / max(sigma_i, eps)``.
+
+    Returns the z-value directly without any non-linear transformation (no CDF,
+    no PDF, no absolute value).  Positive z means the raw score is above the
+    prototype's historical mean; negative z means below.
+
+    The score is unbounded (z ∈ (−∞, +∞)), so the downstream aggregation must
+    handle mixing raw scores and z-scores (e.g. via independent weighted means
+    per class, which is scale-invariant under argmax).
+
+    Prototypes without enough reference observations abstain at 0.0.
     """
     z = (raw - mu) / sigma.clamp(min=sigma_eps)
     return torch.where(valid, z, torch.zeros_like(z))
+
+
+def zscore_pdf(
+    raw: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
+    valid: torch.Tensor,
+    sigma_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Convert raw prototype scores to Gaussian-PDF reliability weights.
+
+    ``score_i = exp(-0.5 * z_i²)`` where ``z_i = (raw_i - mu_i) / max(sigma_i, eps)``
+    and the result is the Gaussian PDF (up to the normalising constant 1/√(2π)).
+
+    Maps z ∈ (−∞, +∞) → (0, 1]:
+      - z =  0 → 1.00  (raw score equals the prototype's historical mean)
+      - z = ±1 → 0.61  (one sigma away)
+      - z = ±3 → 0.01  (three sigma — near-zero weight)
+      - z = ±∞ → 0.00  (extremely unlikely under the reference distribution)
+
+    Unlike :func:`zscore_cdf` (which gives high weight to scores far above the
+    mean) this function peaks at the mean and weights decrease symmetrically as
+    scores deviate — outliers contribute less, not more.  The result is naturally
+    bounded to [0, 1] and requires no further clamping.
+
+    Prototypes without enough reference observations abstain at 0.0.
+    """
+    z = (raw - mu) / sigma.clamp(min=sigma_eps)
+    return torch.where(valid, (-0.5 * z.pow(2)).exp(), torch.zeros_like(z))
 
 
 def grow(state: dict, new_K: int, device) -> Dict[str, torch.Tensor]:

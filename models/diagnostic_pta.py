@@ -38,8 +38,6 @@ class DiagnosticPTAAdapter(BaseAdapter):
         self.patch_level = create_patch_level(cfg)
 
         fusion_cfg = cfg.get("fusion", {})
-        self.tau_text = float(fusion_cfg.get("tau_text", 1.0))
-        self.tau_image_proto = float(fusion_cfg.get("tau_image_proto", 80.0))
         self.fusion_mode = str(fusion_cfg.get("mode", "patch_only"))
 
     def run(self, loader, encoder, text_embeddings, dataset_name: str) -> float:
