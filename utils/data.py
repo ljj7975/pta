@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import InterpolationMode
 from datasets.imagenet import ImageNet
 from datasets import build_dataset
-from datasets.utils import build_data_loader, AugMixAugmenter
+from datasets.utils import build_data_loader, AugMixAugmenter, Datum
 
 _BICUBIC = InterpolationMode.BICUBIC
 
@@ -123,3 +123,85 @@ def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffl
             "Supported: I, A, V, R, S, caltech101, dtd, eurosat, fgvc, "
             "food101, oxford_flowers, oxford_pets, stanford_cars, sun397, ucf101"
         )
+
+
+def _parse_class_selection(class_names, class_file):
+    """Resolve selected class names from either ``class_names`` or ``class_file``.
+
+    ``class_file`` holds one classname per line; lines whose stripped content
+    is empty or starts with ``#`` are ignored (comments). Returns a
+    de-duplicated list preserving order of appearance.
+    """
+    if (class_names is None) == (class_file is None):
+        raise ValueError("Provide exactly one of class_names or class_file")
+    if class_file is not None:
+        with open(class_file, "r") as f:
+            parsed = [
+                line.strip()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        if not parsed:
+            raise ValueError(f"No class names found in class file '{class_file}'")
+        class_names = parsed
+    # De-duplicate while preserving order (dicts keep insertion order in py3.7+).
+    return list(dict.fromkeys(class_names))
+
+
+def build_subset_test_data_loader(
+    dataset_name: str,
+    root_path: str,
+    preprocess,
+    class_names=None,
+    class_file=None,
+    shuffle: bool = True,
+):
+    """Build a closed-set test DataLoader restricted to a subset of classes.
+
+    Loads the full dataset via ``build_dataset`` (same as
+    ``build_test_data_loader``), keeps only samples whose label belongs to the
+    selected classes, and remaps their labels to ``0..K-1`` in class-list
+    order. Selection is either ``class_names`` (list of str) or ``class_file``
+    (path with one classname per line; ``#`` lines are comments); every name
+    is validated against ``dataset.classnames``.
+
+    Returns ``(subset_loader, subset_classnames, template)`` where
+    ``subset_classnames`` preserves the input class-list order, so the i-th
+    entry corresponds to remapped label ``i``.
+    """
+    class_names = _parse_class_selection(class_names, class_file)
+    dataset = build_dataset(dataset_name, root_path)
+
+    full_classnames = list(dataset.classnames)
+    for name in class_names:
+        if name not in full_classnames:
+            raise ValueError(
+                f"Unknown class name '{name}' for dataset '{dataset_name}'. "
+                f"Valid classes: {full_classnames}"
+            )
+
+    # Original dataset label -> remapped label (0..K-1) in class-list order.
+    label_to_new = {
+        full_classnames.index(name): new_label
+        for new_label, name in enumerate(class_names)
+    }
+
+    subset_items = [
+        Datum(
+            impath=item.impath,
+            label=label_to_new[item.label],
+            domain=item.domain,
+            classname=item.classname,
+        )
+        for item in dataset.test
+        if item.label in label_to_new
+    ]
+
+    subset_loader = build_data_loader(
+        data_source=subset_items,
+        batch_size=1,
+        is_train=False,
+        tfm=preprocess,
+        shuffle=shuffle,
+    )
+    return subset_loader, list(class_names), dataset.template
