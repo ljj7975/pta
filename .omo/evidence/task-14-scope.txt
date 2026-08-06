@@ -1,0 +1,30 @@
+===== TASK 14: findings report QA (scope / no-overclaiming) =====
+date: 2026-08-06T00:21:26Z
+
+----- 1. DTD scoping present -----
+4:Scope: DTD (Describable Textures), ViT-B/16 backbone, clip_surgery, seeds 1-2 (full-DTD) / 1-3 (5-class subset).
+13:**Decision rule (PatchModPTA-CS full-DTD records only, ablations excluded)** [S1: outputs/hypothesis_metrics.md:7-11]:
+142:- **Subset accuracy is HIGHER than full-DTD, not lower.** PatchModPTA-sub mean 50.37 vs full-DTD PatchModPTA-CS-s1 48.35 (and s2 47.70) [S3: outputs/result_perclass.txt:3-4]. This is a **DTD-scoped confound, NOT a claim about adaptation strength**: the 5-class closed-set softmax raises confidences (fewer classes to compete against), so the quality gate fires more often and the update loop sees more high-confidence samples [S9:52, 1138; S12: .omo/notepads/.../learnings.md:278]. The subset is a difficulty floor dev set, not a benchmark [S12:278].
+144:- **The 5 selected classes are at the accuracy floor**: 4 of 5 (flecked, lacelike, lined, pitted) are at 0.00% mean accuracy for EVERY method and seed on full-DTD; only bumpy shows any signal (PatchModPTA 1.39 vs PTA 0.00 vs ZeroShot 2.78) [S6:14-18, 22-28, 32-40]. The methods differentiate almost nowhere on this subset because there is essentially nothing to win.
+148:## 4. Ablations (T10: single-seed, full-DTD)
+150:| label | override (top-level) | full-DTD acc (%) | delta vs baseline (pp) |
+182:1. **DTD-scoped.** All results are on Describable Textures only. No claim is made for other datasets [S1; S9:1150].
+183:2. **Limited seeds.** 2 seeds for full-DTD (PatchModPTA-CS-s1/s2), 3 seeds for the subset [S9:35; S12:275-277].
+
+----- 2. caveats/confound/limited present -----
+81:- The naive hypothesis ("better patch prototypes -> more clusters -> higher accuracy") is therefore **NOT supported** [S2:55-60]. Something else (warm-up effects, image-level PTA update, stream-order effects, see Caveats) must explain the accuracy gain.
+142:- **Subset accuracy is HIGHER than full-DTD, not lower.** PatchModPTA-sub mean 50.37 vs full-DTD PatchModPTA-CS-s1 48.35 (and s2 47.70) [S3: outputs/result_perclass.txt:3-4]. This is a **DTD-scoped confound, NOT a claim about adaptation strength**: the 5-class closed-set softmax raises confidences (fewer classes to compete against), so the quality gate fires more often and the update loop sees more high-confidence samples [S9:52, 1138; S12: .omo/notepads/.../learnings.md:278]. The subset is a difficulty floor dev set, not a benchmark [S12:278].
+180:## 6. Caveats
+183:2. **Limited seeds.** 2 seeds for full-DTD (PatchModPTA-CS-s1/s2), 3 seeds for the subset [S9:35; S12:275-277].
+185:4. **5-class closed-set confound.** The subset run remaps labels to 0..K-1 and builds text embeddings from subset classnames only; elevated confidences inflate gate firing. The higher subset accuracy vs full-DTD is a measurement artifact of the closed-set setup, not evidence of adaptation strength [S9:52, 1138; S12:278].
+
+----- 3. verdict verbatim match (no reinterpretation) -----
+23:> **DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)**
+report sections present:
+9:## 1. Hypothesis verdict
+85:## 2. Mechanism analysis
+126:## 3. Subset results (T13: closed-set 5-class difficult subset)
+148:## 4. Ablations (T10: single-seed, full-DTD)
+164:## 5. Decision inputs for the next step
+180:## 6. Caveats
+193:## Sources

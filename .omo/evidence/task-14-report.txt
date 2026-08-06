@@ -1,0 +1,31 @@
+===== TASK 14: findings report QA (happy path) =====
+date: 2026-08-06T00:21:23Z
+
+----- 1. report exists -----
+REPORT_EXISTS (207 lines)
+
+----- 2. verdict present -----
+DECISION count: 1
+23:> **DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)**
+
+----- 3. both config bugs cited -----
+89:### 2.1 Config-read bug 1: `multi_gate` never takes effect
+91:- `models/patch_modulated_pta.py:171` reads `multi_gate = bool(self.cfg.get("multi_gate", False))` at the **top level**, default `False` [S5].
+92:- The intended value lives **nested**: `configs/patch_modulated_pta/patch_modulated_pta.yaml:8` sets `patch_level.multi_gate: true` [S8: configs/patch_modulated_pta/patch_modulated_pta.yaml:8].
+93:- The nested dict is only used for `conf_threshold` / `conf_margin_threshold` (lines 166-167), not for `multi_gate` [S5]. Result: the effective gate is **single-gate** (top-1, conf > 0.3, margin >= 0.00; those two thresholds ARE read correctly from the nested config, patch_modulated_pta.yaml:9-10) [S8:9-10].
+94:- Confirmed by the records themselves: every PatchModPTA-CS record line carries `"gate_mode": "single"` [S10: outputs/records/PatchModPTA-CS-s1/records.jsonl]. The T8 record wiring sets `gate_mode="multi" if multi_gate else "single"` [S5:323], and since the top-level read always yields False, the recorded mode is always "single".
+96:### 2.2 Config-read bug 2: `proto_alpha_max` never takes effect
+98:- `models/patch_modulated_pta.py:169` reads `alpha_max = float(self.cfg.get("proto_alpha_max", 0.2))` at the **top level**, default **0.2** [S5].
+99:- The intended value is nested: `configs/base.yaml` (inherited via `defaults: - ../base` at patch_modulated_pta.yaml:3-4) sets `patch_level.proto_alpha_max: 1.0`, which the top-level read never sees [S8: configs/base.yaml; S9:40].
+153:| PatchModPTA-CS-alpha10-s1 | `--override proto_alpha_max=1.0` | 45.45 | **-2.90** |
+154:| PatchModPTA-CS-multigate-s1 | `--override multi_gate=1` | 48.64 | **+0.29** |
+
+----- 4. ablation rows present -----
+153:| PatchModPTA-CS-alpha10-s1 | `--override proto_alpha_max=1.0` | 45.45 | **-2.90** |
+154:| PatchModPTA-CS-multigate-s1 | `--override multi_gate=1` | 48.64 | **+0.29** |
+
+----- 5. parity quoted -----
+142:- **Subset accuracy is HIGHER than full-DTD, not lower.** PatchModPTA-sub mean 50.37 vs full-DTD PatchModPTA-CS-s1 48.35 (and s2 47.70) [S3: outputs/result_perclass.txt:3-4]. This is a **DTD-scoped confound, NOT a claim about adaptation strength**: the 5-class closed-set softmax raises confidences (fewer classes to compete against), so the quality gate fires more often and the update loop sees more high-confidence samples [S9:52, 1138; S12: .omo/notepads/.../learnings.md:278]. The subset is a difficulty floor dev set, not a benchmark [S12:278].
+152:| PatchModPTA-CS-s1 (baseline) | none | 48.35 | 0.00 |
+176:5. **Ground truth for re-evaluation already exists.** Parity-validated records (48.35 == 48.35, 46.99 == 46.99 [S13: .omo/evidence/task-10-parity-gate.txt:7, 14]) mean any redesigned prototype mechanism can be benchmarked against the same recordings without re-running the baseline.
+188:7. **Recording is behavior-neutral.** Parity PASS quoted: PatchModPTA-CS-s1 48.35 == ref 48.35; PTA-CS-s1 46.99 == ref 46.99 [S13:7, 14]. The records are therefore trustworthy for the analyses above.
