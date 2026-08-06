@@ -1,0 +1,41 @@
+Task 10: failure triage
+=======================
+
+FAILURE 1 — Task 13933_2 (PTA-CS-s1) ExitCode 1:0, 23 s
+--------------------------------------------------------
+Log: logs/pta_perclass_pta_perclass-13933_2.err
+  RuntimeError: CUDA driver initialization failed, you might not have a CUDA gpu.
+  at runner.py clip_classifier -> torch.stack(text_embeddings, dim=1).cuda() (_lazy_init)
+Node: node2 (mix state, 4x rtx_a6000). Transient: the three tasks that ran on
+node2 right after it (13933_3/4/5) all COMPLETED. Root cause = GPU/driver
+hiccup at launch, NOT a code/config error. PTA-CS-s1 wrote zero records
+(failed before the header line).
+
+ACTION: re-submit failed exp lines only -> sbatch --array=2-3 (job 13947).
+Both COMPLETED 0:0. No change to the exp list in slurm_perclass.sh.
+
+FAILURE 2 — PTA result lines never reached outputs/result_perclass.txt
+----------------------------------------------------------------------
+Symptom: after job 13933, result_perclass.txt had 6 lines; PTA-CS-s2
+(COMPLETED 0:0, acc 46.39, 1692 records written) was missing.
+
+Root cause: models/pta.py:204 hardcoded
+    with open("outputs/result.txt", "a") as f:
+ignoring the RESULT_FILE env var that slurm_perclass.sh sets to
+outputs/result_perclass.txt. The other two adapters already honored it:
+  models/zeroshot.py:87            result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
+  models/patch_modulated_pta.py:395 same pattern
+PTA-CS-s2's first run wrote its line to outputs/result.txt instead
+(observed: "PTA-CS-s2's performance on dtd: Top1- 46.39.").
+
+Fix (models/pta.py, mirrors the established pattern; behavior-neutral when
+RESULT_FILE unset — default path unchanged):
+    result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
+    with open(result_file, "a") as f:
+
+ACTION: removed stale outputs/records/PTA-CS-s1 (empty) and
+outputs/records/PTA-CS-s2 (first-run records backed up to
+/tmp/brandon_task10_backup/PTA-CS-s2) so the re-run produced FRESH
+non-append-corrupted records; re-submitted sbatch --array=2-3 (job 13947).
+Final state: 8/8 COMPLETED 0:0; result_perclass.txt = 8 lines; all 8 record
+dirs = 1 header + 1692 samples; parity PASS (exact match on both references).

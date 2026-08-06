@@ -1,0 +1,27 @@
+Task 10: parity gate
+====================
+Command: python scripts/analyze_records.py parity --records outputs/records
+         (env: conda pta, PYTHONPATH=$PWD, CUBLAS_WORKSPACE_CONFIG=:4096:8)
+
+OUTPUT:
+  PARITY GATE: PASS (PatchModPTA-CS-s1 acc=48.35 vs ref 48.35 [PatchModPTA-CS-2]; PTA-CS-s1 acc=46.99 vs ref 46.99 [PTA-CS])
+
+Exit code: 0
+
+References (outputs/exp_results.txt, same config dirs / clip_surgery / ViT-B/16):
+  PatchModPTA-CS-2 = 48.35   <- seed-1 PatchModPTA-CS reference
+  PTA-CS           = 46.99   <- seed-1 PTA-CS reference
+Tolerance: +/- 0.5 pp. Both measured accs match their references EXACTLY.
+
+outputs/result_perclass.txt (8 lines):
+  ZeroShot-CS-s1       44.39
+  ZeroShot-CS-s2       44.39
+  PatchModPTA-CS-s2    47.70
+  PatchModPTA-CS-s1    48.35
+  PatchModPTA-CS-alpha10-s1  45.45
+  PatchModPTA-CS-multigate-s1 48.64
+  PTA-CS-s2            46.39
+  PTA-CS-s1            46.99
+
+Recording is behavior-neutral (verified bit-identical in T5/T6/T7); parity
+reproduced the published values exactly. Records trusted for T11/T12.
