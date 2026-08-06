@@ -1,0 +1,9 @@
+PTA-CS-sub-s3's performance on dtd: Top1- 48.89.
+PatchModPTA-CS-sub-s1's performance on dtd: Top1- 52.22.
+PatchModPTA-CS-sub-s2's performance on dtd: Top1- 50.00.
+ZeroShot-CS-sub-s1's performance on dtd: Top1- 48.33.
+ZeroShot-CS-sub-s3's performance on dtd: Top1- 48.33.
+ZeroShot-CS-sub-s2's performance on dtd: Top1- 48.33.
+PTA-CS-sub-s1's performance on dtd: Top1- 50.56.
+PatchModPTA-CS-sub-s3's performance on dtd: Top1- 48.89.
+PTA-CS-sub-s2's performance on dtd: Top1- 51.67.

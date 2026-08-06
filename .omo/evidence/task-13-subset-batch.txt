@@ -1,0 +1,88 @@
+Task 13: closed-set difficult-class subset batch (9 runs: 3 methods x 3 seeds)
+===============================================================================
+Script: scripts/slurm_subset.sh (commit aaa60e6, 9 active exp lines)
+Class file: outputs/subset_classes.txt (Task 11, commit d430e15) — 5 classes:
+  bumpy flecked lacelike lined pitted
+Subset loader: closed-set (labels remapped 0..4, C=5), --class-file
+Exp lines (N_EXP=9, N_DS=1, --array=0-8):
+  0 PatchModPTA-CS-sub-s1   (patch_modulated_pta, clip_surgery, seed 1)
+  1 PatchModPTA-CS-sub-s2   (patch_modulated_pta, clip_surgery, seed 2)
+  2 PatchModPTA-CS-sub-s3   (patch_modulated_pta, clip_surgery, seed 3)
+  3 PTA-CS-sub-s1           (pta, clip_surgery, seed 1)
+  4 PTA-CS-sub-s2           (pta, clip_surgery, seed 2)
+  5 PTA-CS-sub-s3           (pta, clip_surgery, seed 3)
+  6 ZeroShot-CS-sub-s1      (zeroshot, clip_surgery, seed 1)
+  7 ZeroShot-CS-sub-s2      (zeroshot, clip_surgery, seed 2)
+  8 ZeroShot-CS-sub-s3      (zeroshot, clip_surgery, seed 3)
+
+JOB 1: 13949 (CLASS_FILE=outputs/subset_classes.txt sbatch --array=0-8)
+  Submitted : 2026-08-05 20:10:59 EDT
+  Result    : 6/9 COMPLETED ExitCode 0:0; FAILED: 13949_2, 13949_3, 13949_4
+              (all ExitCode 1:0 on node2, 16-23 s in — CUDA driver init failure)
+
+JOB 2: 13958 (re-run of failed indices, sbatch --array=2,3,4)
+  Submitted : ~20:14:20 EDT
+  Result    : 2/3 COMPLETED (13958_2, 13958_3 on node1); FAILED: 13958_4
+              (ExitCode 1:0 on node2, 21 s — same transient CUDA failure)
+
+JOB 3: 13961 (re-run of failed index, sbatch --array=4)
+  Submitted : ~20:15:30 EDT
+  Result    : 1/1 COMPLETED (13961_4 on node1)
+
+  Final: ALL 9 exp runs COMPLETED ExitCode 0:0
+  Wall time: ~5.5 min total (submit 20:10:59 EDT -> last task end ~20:16:12 EDT)
+
+sacct (consolidated, JobID/State/Elapsed/ExitCode/NodeList):
+  JobID       State      Elapsed ExitCode NodeList
+  13949_0  COMPLETED   00:01:29      0:0    node1
+  13949_1  COMPLETED   00:01:29      0:0    node1
+  13949_2     FAILED   00:00:23      1:0    node2   (CUDA init)
+  13949_3     FAILED   00:00:16      1:0    node2   (CUDA init)
+  13949_4     FAILED   00:00:16      1:0    node2   (CUDA init)
+  13949_5  COMPLETED   00:00:24      0:0    node2
+  13949_6  COMPLETED   00:00:25      0:0    node2
+  13949_7  COMPLETED   00:00:21      0:0    node1
+  13949_8  COMPLETED   00:00:21      0:0    node1
+  13958_2  COMPLETED   00:01:38      0:0    node1
+  13958_3  COMPLETED   00:00:30      0:0    node1
+  13958_4     FAILED   00:00:21      1:0    node2   (CUDA init)
+  13961_4  COMPLETED   00:00:23      0:0    node1
+
+outputs/result_subset.txt — 9 lines (wc -l = 9):
+  PTA-CS-sub-s3's performance on dtd: Top1- 48.89.
+  PatchModPTA-CS-sub-s1's performance on dtd: Top1- 52.22.
+  PatchModPTA-CS-sub-s2's performance on dtd: Top1- 50.00.
+  ZeroShot-CS-sub-s1's performance on dtd: Top1- 48.33.
+  ZeroShot-CS-sub-s3's performance on dtd: Top1- 48.33.
+  ZeroShot-CS-sub-s2's performance on dtd: Top1- 48.33.
+  PTA-CS-sub-s1's performance on dtd: Top1- 50.56.
+  PatchModPTA-CS-sub-s3's performance on dtd: Top1- 48.89.
+  PTA-CS-sub-s2's performance on dtd: Top1- 51.67.
+
+Record dirs (outputs/records_subset/<LABEL>/) — 9/9 present, each records.jsonl
+= 1 header + 180 sample lines (181 total), summary.json present:
+  PatchModPTA-CS-sub-s1  records.jsonl=181  acc=52.22 total=180 per_class=5
+  PatchModPTA-CS-sub-s2  records.jsonl=181  acc=50.00 total=180 per_class=5
+  PatchModPTA-CS-sub-s3  records.jsonl=181  acc=48.89 total=180 per_class=5
+  PTA-CS-sub-s1          records.jsonl=181  acc=50.56 total=180 per_class=0
+  PTA-CS-sub-s2          records.jsonl=181  acc=51.67 total=180 per_class=0
+  PTA-CS-sub-s3          records.jsonl=181  acc=48.89 total=180 per_class=0
+  ZeroShot-CS-sub-s1     records.jsonl=181  acc=48.33 total=180 per_class=0
+  ZeroShot-CS-sub-s2     records.jsonl=181  acc=48.33 total=180 per_class=0
+  ZeroShot-CS-sub-s3     records.jsonl=181  acc=48.33 total=180 per_class=0
+NOTE: per_class populated only for PatchModPTA (per-class stats are a
+PatchModPTA-specific recording detail); PTA/ZeroShot summaries carry
+total+acc only. Not a failure condition.
+
+Per-method mean subset accuracy (documented, NOT gated):
+  PatchModPTA-CS-sub: (52.22 + 50.00 + 48.89)/3 = 50.37
+  PTA-CS-sub:         (50.56 + 51.67 + 48.89)/3 = 50.37
+  ZeroShot-CS-sub:    (48.33 + 48.33 + 48.33)/3 = 48.33
+Sanity: ~48-52% on a 5-class closed-set dev subset (cf. full-DTD PatchModPTA-CS
+48.35). PatchModPTA-sub means are NOT below full-DTD — the 5-class closed-set
+softmax raises confidences, and only 1/5 classes (bumpy) had nonzero signal on
+full-DTD. The 5-class closed-set confound (gates fire more) is documented for
+T14; subset is a dev set, not a benchmark to beat.
+
+Failures: see task-13-failure-triage.txt (all transient node2 CUDA driver init
+failures, re-submitted until COMPLETED — no code or config changes).

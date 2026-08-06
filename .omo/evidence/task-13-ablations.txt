@@ -1,0 +1,25 @@
+Task 13: T10 ablation records + result_perclass excerpt (for T14 report)
+========================================================================
+Both T10 ablation record dirs exist under outputs/records/ with 1 header +
+1692 sample lines (1693 total) each, summary.json present:
+
+  outputs/records/PatchModPTA-CS-alpha10-s1/records.jsonl    1693 lines
+  outputs/records/PatchModPTA-CS-multigate-s1/records.jsonl  1693 lines
+
+result_perclass.txt — PatchModPTA baseline + 2 ablations (3 lines):
+  PatchModPTA-CS-s1's performance on dtd: Top1- 48.35.
+  PatchModPTA-CS-alpha10-s1's performance on dtd: Top1- 45.45.
+  PatchModPTA-CS-multigate-s1's performance on dtd: Top1- 48.64.
+
+Ablation deltas vs baseline PatchModPTA-CS-s1 (48.35):
+  proto_alpha_max=1.0 (alpha10): 45.45  -> -2.90 pp (patch term influence raised)
+  multi_gate=1 (multigate):      48.64  -> +0.29 pp (gate behavior changed)
+
+Full T10 record set (all 8 dirs present, each 1693 lines): PatchModPTA-CS-s1,
+PatchModPTA-CS-s2, PTA-CS-s1, PTA-CS-s2, ZeroShot-CS-s1, ZeroShot-CS-s2,
+PatchModPTA-CS-alpha10-s1, PatchModPTA-CS-multigate-s1.
+
+Context for T14: proto_alpha_max top-level default is 0.2 (not the nested 1.0),
+so forcing it to 1.0 cost -2.90 pp on full DTD; multi_gate=1 (top-level False
+default) gains only +0.29 pp. Both ablation records are available for per-sample
+comparison against PatchModPTA-CS-s1 in the findings report.

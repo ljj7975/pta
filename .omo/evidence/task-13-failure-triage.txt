@@ -1,0 +1,46 @@
+Task 13: failure triage — subset batch (job 13949 + re-runs 13958/13961)
+=========================================================================
+Symptom: 3 of 9 array tasks FAILED with ExitCode 1:0 in the FIRST batch
+(13949_2, 13949_3, 13949_4). One more FAILED in the second batch (13958_4).
+
+Root cause (identical to T10, task-10-failure-triage.txt): transient
+"CUDA driver initialization failed" on node2. All 4 failures share the same
+signature in logs/*.err:
+
+  UserWarning: CUDA initialization: CUDA driver initialization failed, ...
+    (Triggered internally at .../c10/cuda/CUDAFunctions.cpp:109.)
+  RuntimeError: CUDA driver initialization failed, you might not have a CUDA gpu.
+    File ".../runner.py", line 228, in main
+      text_embeddings = clip_classifier(classnames, template, encoder)
+    File ".../utils/clip_inference.py", line 87, in clip_classifier
+      text_embeddings = torch.stack(text_embeddings, dim=1).cuda()
+
+Every failing task ran on node2; tasks landing on node1 succeeded. The same
+node2 transient was hit and survived by plain re-submission in T10.
+
+Timeline:
+  13949 (array 0-8, submitted 20:10:59 EDT):
+    FAILED -> _2 PatchModPTA-CS-sub-s3, _3 PTA-CS-sub-s1, _4 PTA-CS-sub-s2
+  13958 (array 2,3,4):
+    COMPLETED -> _2, _3 (node1); FAILED -> _4 PTA-CS-sub-s2 (node2 again)
+  13961 (array 4):
+    COMPLETED -> _4 (node1)
+
+Triage steps per re-run:
+  1. Confirmed failure was the CUDA driver init error (not a code bug) by
+     grepping the .err for the RuntimeError signature.
+  2. Removed the stale (empty) outputs/records_subset/<LABEL>/ dir created by
+     the failed run's `mkdir -p` BEFORE re-submission. All stale dirs were
+     EMPTY (runs died at text-embedding construction, before any sample was
+     recorded) so no /tmp backup was needed; removal prevents any risk of
+     append-corrupted records.jsonl from a partial first run.
+  3. Re-submitted ONLY the failed indices via `--array=` override (2,3,4 then
+     4). No changes to scripts/slurm_subset.sh, no code changes.
+
+Result: all 9 exp runs COMPLETED ExitCode 0:0 across 3 job submissions.
+Final record dirs for the re-run labels are clean (181 lines = 1 header +
+180 samples, single header, no double-appended partial data).
+
+Learned (for T14+): node2's CUDA driver init failure is recurring (hit in
+T10 AND T13, multiple times). If a future batch allows it, consider
+node-excluding node2 (--exclude=node2) or pinning to node1 for reliability.
