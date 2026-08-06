@@ -1,0 +1,159 @@
+# Task 15 — Full QA sweep (2026-08-06)
+
+Plan: `.omo/plans/perclass-difficult-classes-validation.md` lines 1208-1272
+Env prefix: `source /shared/miniconda3/etc/profile.d/conda.sh && conda activate /share_98/projects/brandon/envs/pta && cd /share_98/projects/brandon/repos/pta && export PYTHONPATH=$PWD && export CUBLAS_WORKSPACE_CONFIG=:4096:8`
+
+## 1. Non-GPU tests (login node)
+
+Command: `python tests/test_records.py && python tests/test_subset_loader.py && python tests/test_analyze_records.py`
+
+```
+records: test_records.py
+  ok: records.jsonl created in RECORD_DIR
+  ok: summary.json created in RECORD_DIR
+  ok: JSONL has exactly header + 2 sample lines
+  ok: line 0 is the __header__ object
+  ok: header.method
+  ok: header.dataset
+  ok: header.seed is int
+  ok: header.C
+  ok: header.classnames
+  ok: header.resolved_config round-trips the fixture config
+  ok: header.created_at is iso string
+  ok: sample line has exact schema fields
+  ok: logits has exactly 4 fields
+  ok: proto_stats has true/pred
+  ok: batch_idx/target/pred
+  ok: correct serializes as bool true
+  ok: conf
+  ok: quality_gate
+  ok: gate_mode
+  ok: proto_alpha
+  ok: logits.final
+  ok: logits.patch_proto is null
+  ok: proto_stats.true
+  ok: proto_stats.pred
+  ok: None quality_gate serialized as null
+  ok: None gate_mode serialized as null
+  ok: None proto_alpha serialized as null
+  ok: None logits fields serialized as null
+  ok: None proto_stats serialized as null
+  ok: correct serializes as bool false
+  ok: summary.method
+  ok: summary.dataset
+  ok: summary.seed
+  ok: summary.total/acc
+  ok: summary.per_class.a incl. n_*
+  ok: summary.per_class.b (n_* omitted)
+  ok: serialized JSONL contains no tensor repr
+  ok: fp16 logits are python floats
+  ok: fp16 final logits are python floats
+  ok: fp16 scalar conf → python float via .item()
+  ok: fp16 scalar quality_gate → python float
+  ok: zero files created anywhere when RECORD_DIR unset
+  ok: no records.jsonl created
+  ok: no summary.json created
+  ok: writer os.makedirs creates nested RECORD_DIR path
+records: ALL TESTS PASSED
+subset_loader: PASS two-class remap (labels in {0,1}, len==72)
+subset_loader: PASS unknown class raises ValueError
+subset_loader: PASS class_file parsing (comments, len==72)
+subset_loader: PASS classnames in input order
+subset_loader: ALL TESTS PASSED
+============================================================
+  analyze_records tests (synthetic, no GPU)
+============================================================
+[OK] table written to /tmp/rec_fix/tables.md
+  [ok] table: per-class rows + cross-method diff
+  [ok] parity: PASS case exits 0 with values
+  [ok] parity: FAIL case exits 1
+  [ok] select: bottom-k in dataset order + gap table printed
+  [ok] hypothesis: rising stream -> SUPPORT
+  [ok] hypothesis: flat -> INCONCLUSIVE; decreasing -> REFUTE
+  [ok] flip metrics: patch_flip / flip_vs_img / patch_only_flip rates
+============================================================
+analyze_records: ALL TESTS PASSED
+============================================================
+```
+
+Result: 3/3 non-GPU tests PASS, combined exit code 0.
+
+## 2. GPU tests (sbatch, 3/3 behavior-neutral)
+
+All wrappers (existing T5/T6/T7 /tmp wrappers) re-run as-is plus `#SBATCH --exclude=node2`
+(the known-bad node from T10/T13). All jobs COMPLETED ExitCode 0:0.
+
+### Job 13962 — patchmod (tests/test_records_patchmod.py, wrapper /tmp/brandon_t5/task5_rec_patchmod.sbatch)
+Log: logs/t5_rec_patchmod_13962.out
+```
+  ok: (a) final_acc bit-identical with vs without recording: 66.66666666666667 == 66.66666666666667
+  ok: (c) every line has full logits dict with 4 arrays of length C=47
+  ok: (d) proto_stats.true/pred n_clusters+n_images match states[c] at record time
+  ok: (e) gate_mode == 'single' on every line
+  ok: summary.total/acc consistent
+  ok: summary.per_class has C=47 entries
+  ok: summary.per_class entries carry n_images_end/n_clusters_end
+patchmod records + behavior-neutral: ALL TESTS PASSED
+TEST EXIT CODE: 0
+```
+State: COMPLETED, ExitCode 0:0.
+
+### Job 13963 — pta (tests/test_records_pta.py, wrapper /tmp/t6_records/t6_records_pta.sbatch)
+Log: logs/t6_records_pta_13963.out
+```
+  accuracy (with records): 50.0000%
+  accuracy (no records): 50.0000%
+  ok: accuracy bit-identical with vs without RECORD_DIR (behavior-neutral)
+  pta records + behavior-neutral: ALL TESTS PASSED
+test_records_pta exit code: 0
+```
+Plus full JSONL schema checks (header + 30 lines, exact 4-field logits schema, null proto_stats). State: COMPLETED, ExitCode 0:0.
+
+### Job 13964 — zeroshot (tests/test_records_zeroshot.py, wrapper /tmp/t7_slurm_test_records_zeroshot.sh)
+Log: logs/t7_zs_records_13964.out
+```
+  acc_with    = 6.6666666667
+  acc_without = 6.6666666667
+  acc identical (bit-for-bit): PASS
+zeroshot records + behavior-neutral: ALL TESTS PASSED
+```
+State: COMPLETED, ExitCode 0:0.
+
+## 3. Parity gate (re-run on final records)
+
+Command: `python scripts/analyze_records.py parity --records outputs/records`
+```
+PARITY GATE: PASS (PatchModPTA-CS-s1 acc=48.35 vs ref 48.35 [PatchModPTA-CS-2]; PTA-CS-s1 acc=46.99 vs ref 46.99 [PTA-CS])
+```
+Exit code: 0. Both references matched exactly (no tolerance margin needed).
+
+## 4. Outputs existence check
+
+Command: `for f in subset_classes.txt perclass_tables.md gap_analysis.md hypothesis_metrics.md hypothesis_findings.md result_perclass.txt result_subset.txt; do test -s outputs/$f && echo "OK $f" || echo "MISSING $f"; done`
+```
+OK subset_classes.txt
+OK perclass_tables.md
+OK gap_analysis.md
+OK hypothesis_metrics.md
+OK hypothesis_findings.md
+OK result_perclass.txt
+OK result_subset.txt
+```
+7/7 present and non-empty. (`outputs/run_summary.md` written by this task; records dirs `outputs/records/` + `outputs/records_subset/` verified in T10/T13.)
+
+## 5. Stray records check
+
+Command: `find . -name records.jsonl -not -path "./outputs/*" -not -path "./.omo/*" 2>/dev/null | wc -l`
+```
+0
+```
+Recording no-op behavior intact — no records.jsonl outside outputs/ and .omo/.
+
+## 6. Summary
+
+- Non-GPU tests: 3/3 PASS ("ALL TESTS PASSED" each, exit 0)
+- GPU tests: 3/3 PASS (jobs 13962/13963/13964, COMPLETED 0:0, bit-identical accuracy with vs without RECORD_DIR)
+- Parity gate: PASS (48.35 / 46.99 exact)
+- Outputs: 7/7 present
+- Stray records: 0
+- Evidence index: `.omo/evidence/index.md` (see task-15-evidence.txt for completeness check)

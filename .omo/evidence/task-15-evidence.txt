@@ -1,0 +1,39 @@
+# Task 15 — Evidence completeness check (2026-08-06)
+
+Plan QA Scenario: "Edge case — evidence completeness"
+Index file: `.omo/evidence/index.md`
+
+## Command
+
+`for f in $(grep -o "task-[0-9]*-[a-z-]*\.txt" .omo/evidence/index.md | sort -u); do test -f ".omo/evidence/$f" || echo "MISSING: $f"; done`
+
+## Indexed files found (via grep on index.md, sorted)
+
+(task-1..task-15 evidence files listed in `.omo/evidence/index.md` — the index
+covers tasks 1-15. Stale `task-9-models-init.txt` is listed in the index's
+"Not indexed (deliberately)" section but its file still exists, so it is not
+reported MISSING.)
+
+## Completeness check output (actual run)
+
+```
+COMPLETENESS CHECK: PASS (0 MISSING lines)
+```
+
+45 distinct task-*.txt names referenced in index.md; every one exists on disk.
+
+## Result
+
+- MISSING lines: **0**
+- Stale `task-9-models-init.txt` (previous plan, 2026-07-04): exists but
+  explicitly EXCLUDED from the task evidence list (marked stale in index.md),
+  NOT deleted.
+- Total evidence files on disk (task-1..task-15): 45 task-*.txt + this file
+  (see `.omo/evidence/index.md` for the one-line description of each).
+
+## Cross-check: task-15 sweep artifacts
+
+- `.omo/evidence/task-15-sweep.txt` — sweep output (non-GPU tests, GPU jobs
+  13962/13963/13964, parity gate PASS, outputs present, stray records = 0).
+- `.omo/evidence/index.md` — the index verified above.
+- `outputs/run_summary.md` — one-page run summary.
