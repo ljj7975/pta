@@ -1,0 +1,40 @@
+===== TASK 12 VERDICT (pre-registered hypothesis rule) =====
+date: 2026-08-06T00:07:33Z
+records: outputs/records (PatchModPTA-CS full-DTD, ALL seeds aggregated, ablations excluded)
+report: outputs/hypothesis_metrics.md
+
+----- DECISION LINE (verbatim from outputs/hypothesis_metrics.md) -----
+DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)
+
+----- PRE-REGISTERED RULE (unchanged; from scripts/analyze_records.py T4, e060915) -----
+  SUPPORT     iff delta_mean > +1.0 pp AND rho_mean > 0.2
+  REFUTE      iff delta_mean < 0
+  INCONCLUSIVE otherwise
+
+----- RULE APPLICATION -----
+  delta_mean = +5.02 pp ; rho_mean = -0.44
+  SUPPORT?  +5.02 > +1.0 pp is TRUE, but -0.44 > 0.2 is FALSE  -> AND fails -> NOT SUPPORT
+  REFUTE?   +5.02 < 0 is FALSE                                  -> NOT REFUTE
+  -> INCONCLUSIVE  (both pre-registered thresholds exactly as specified; NO thresholds changed)
+
+----- RULE-APPLICATION TRACE -----
+  delta_mean > 1.0 pp : YES (+5.02)
+  rho_mean   > 0.2    : NO  (-0.44)
+  => condition1 AND condition2 = FALSE
+  delta_mean < 0       : NO  (+5.02)
+  => REFUTE branch = FALSE
+  => verdict = INCONCLUSIVE
+
+----- VALIDITY CHECK -----
+  verdict is one of {SUPPORT, INCONCLUSIVE, REFUTE}: YES (INCONCLUSIVE)
+  Applied to PatchModPTA-CS full-DTD records ONLY: YES (PatchModPTA-CS-s1, -s2;
+  ablations -alpha10/-multigate excluded by classify_label; PTA/ZeroShot runs are
+  report-context only and do not enter delta_mean/rho_mean).
+  >=2 seeds aggregated: YES (2 seeds: s1, s2).
+
+----- CONTEXT NOTE (for T14 report) -----
+Verdict INCONCLUSIVE matches the user's prior expectation range (REFUTE/INCONCLUSIVE)
+given PatchModPTA-CS ~= PTA-CS (~48 vs ~47 overall). NOT SUPPORT.
+Caveat worth reporting: delta_mean = +5.02 pp (accuracy improves across the stream),
+while rho_mean = -0.44 (negative: cluster growth correlates with LOWER last-half acc).
+The INCONCLUSIVE result is driven by the rho leg failing, not by a flat delta.

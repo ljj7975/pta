@@ -1,0 +1,60 @@
+===== TASK 12: pre-registered hypothesis metrics + decision rule =====
+date: 2026-08-06T00:07:33Z
+
+----- CMD -----
+python scripts/analyze_records.py hypothesis --records outputs/records --out outputs/hypothesis_metrics.md
+
+----- FULL STDOUT -----
+Reading split from ./data/dtd/split_zhou_DescribableTextures.json
+DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)
+[OK] hypothesis metrics written to outputs/hypothesis_metrics.md
+exit=0
+
+----- VERDICT GREP (outputs/hypothesis_metrics.md) -----
+DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)
+
+----- HAND CROSS-CHECK: seed-1 PatchModPTA-CS delta (reads JSONL directly) -----
+path = outputs/records/PatchModPTA-CS-s1/records.jsonl (skip __header__ line; all 1692 samples)
+n                = 1692
+half (n//2)      = 846
+first  [0:846)   correct = 386/846  acc = 45.63%
+last   [846:1692) correct = 432/846  acc = 51.06%
+hand delta       = +5.44 pp
+script delta     = +5.44 pp
+abs diff         = 0.003 pp  (<= 0.1 pp REQUIRED)  => MATCH
+
+----- HAND VERIFICATION of rho + delta_mean aggregate (scipy spearmanr) -----
+s1 (PatchModPTA-CS-s1): hand rho = -0.51 over 39 class pairs (script: -0.51)  MATCH
+s2 (PatchModPTA-CS-s2): hand rho = -0.37 over 39 class pairs (script: -0.37)  MATCH
+hand rho_mean = -0.44 (script: -0.44)  MATCH
+s1 delta = +5.44 pp (script: +5.44)  MATCH
+s2 delta = +4.61 pp (script: +4.61)  MATCH
+hand delta_mean = +5.02 pp (script: +5.02)  MATCH
+=> BOTH PatchModPTA-CS seeds (s1 AND s2) are aggregated in delta_mean/rho_mean.
+
+----- SEED AGGREGATION CHECK -----
+Aggregate section of outputs/hypothesis_metrics.md lists:
+  - PatchModPTA-CS-s1: delta = 5.44 pp, rho = -0.51
+  - PatchModPTA-CS-s2: delta = 4.61 pp, rho = -0.37
+delta_mean = (5.44 + 4.61)/2 = 5.02 pp ; rho_mean = (-0.51 + -0.37)/2 = -0.44
+>= 2 seeds aggregated: YES (2/2). No seed cherry-picking.
+
+----- REPORT CONTENT CHECK -----
+- Per-run stream metrics (acc_first/acc_last/delta per run): PRESENT
+- rho (Spearman per-class n_clusters_end vs last-half acc, zero-cluster masked): PRESENT
+- Rolling-window summary win=100 (non-overlapping): PRESENT
+- Flip metrics tables patch_flip / flip_vs_img / patch_only_flip (masked "—" when zero prototypes): PRESENT
+- Per-seed breakdown: PRESENT
+- Verdict line: PRESENT
+
+----- SANITY CHECK vs prior observation -----
+Prior observation: PatchModPTA-CS ~= PTA-CS (~48 vs ~47 overall acc) -> expected verdict REFUTE/INCONCLUSIVE.
+Actual verdict: INCONCLUSIVE  (within expected range; NOT SUPPORT).
+NOTABLE: delta_mean = +5.02 pp is a sizable POSITIVE within-stream improvement
+(first-half ~45.5% -> last-half ~50.5% for PatchModPTA-CS seeds) — accuracy does NOT
+decrease over the stream as initially feared. However the hypothesis is NOT supported
+because the second pre-registered condition fails hard: rho_mean = -0.44 (strongly
+NEGATIVE — classes whose cluster count grows most end up with LOWER last-half accuracy,
+and the sign is opposite to the hypothesis). Both conditions required for SUPPORT;
+INCONCLUSIVE is driven by the rho leg, not a flat delta. This mixed pattern is a
+non-trivial finding to carry into T14.
