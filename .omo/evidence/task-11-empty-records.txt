@@ -1,0 +1,16 @@
+=== T11 empty-records edge case 2026-08-06T00:07:29Z ===
+
+### Input: empty dir /tmp/empty_records
+total 80
+drwxrwxr-x    2 brandon brandon  4096 Aug  5 20:07 .
+drwxrwxrwt 1111 root    root    73728 Aug  5 20:07 ..
+
+### Command:
+python scripts/analyze_records.py select --records /tmp/empty_records --k 5 --out /tmp/out.txt
+
+### Output:
+[ERROR] no records found in /tmp/empty_records
+EXIT=1
+
+### Partial-output check (should NOT exist):
+PASS: no partial output file /tmp/out.txt

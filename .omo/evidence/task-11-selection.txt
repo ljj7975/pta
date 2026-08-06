@@ -1,0 +1,37 @@
+=== T11 selection evidence 2026-08-06T00:07:06Z ===
+
+### STEP 1: table subcommand
+Reading split from ./data/dtd/split_zhou_DescribableTextures.json
+[OK] table written to outputs/perclass_tables.md
+TABLE_EXIT=0
+
+### STEP 2: select subcommand
+Reading split from ./data/dtd/split_zhou_DescribableTextures.json
+Selected 5 difficult class(es) (bottom-5 by mean PatchModPTA-CS acc):
+| class | PatchModPTA | PTA | PatchModPTA-PTA | ZeroShot | PatchModPTA-ZeroShot |
+|---|---|---|---|---|---|
+| bumpy | 1.39 | 0.00 | +1.39 | 2.78 | -1.39 |
+| flecked | 0.00 | 0.00 | +0.00 | 0.00 | +0.00 |
+| lacelike | 0.00 | 0.00 | +0.00 | 0.00 | +0.00 |
+| lined | 0.00 | 0.00 | +0.00 | 0.00 | +0.00 |
+| pitted | 0.00 | 0.00 | +0.00 | 0.00 | +0.00 |
+[OK] subset classes written to outputs/subset_classes.txt
+SELECT_EXIT=0
+
+### STEP 3: wc -l
+5 outputs/subset_classes.txt
+
+### STEP 3b: content
+bumpy
+flecked
+lacelike
+lined
+pitted
+
+### STEP 4: inline validation
+Reading split from ./data/dtd/split_zhou_DescribableTextures.json
+SUBSET CLASSES VALID
+
+### STEP 5: determinism check
+RERUN_EXIT=0
+DETERMINISTIC: IDENTICAL
