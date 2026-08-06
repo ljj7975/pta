@@ -201,7 +201,8 @@ class PTAAdapter(BaseAdapter):
 
         # Append results to output file (append mode, multiple runs accumulate)
         label = os.environ.get("RESULT_LABEL", "PTA")
-        with open("outputs/result.txt", "a") as f:
+        result_file = os.environ.get("RESULT_FILE", "outputs/result.txt")
+        with open(result_file, "a") as f:
             f.write(
                 f"{label}'s performance on {dataset_name}: Top1- {final_acc:.2f}.\n"
             )
