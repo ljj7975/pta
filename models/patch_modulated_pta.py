@@ -25,7 +25,6 @@ from tqdm import tqdm
 from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.patch_level import create as create_patch_level
-from models.patch_level.base import _alpha_from_evidence
 from utils.clip_inference import _safe_normalize
 from models.fusion import QualityGatedFusion, ProtoAlphaFusion
 
@@ -165,10 +164,8 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         _pl_cfg            = self.cfg.get("patch_level", {})
         conf_thresh        = float(_pl_cfg.get("conf_threshold", self.cfg.get("conf_threshold", 0.5)))
         conf_margin_thresh = float(_pl_cfg.get("conf_margin_threshold", self.cfg.get("conf_margin_threshold", 0.05)))
-        n_half             = float(self.cfg.get("n_half", 15.0))
-        alpha_max          = float(self.cfg.get("proto_alpha_max", 0.2))
         conf_source        = str(self.cfg.get("conf_source", "text"))
-        multi_gate         = bool(self.cfg.get("multi_gate", False))
+        multi_gate         = bool(_pl_cfg.get("multi_gate", self.cfg.get("multi_gate", False)))
         # Which logits to use for the confidence gate (step 7):
         #   "text"  — clip_logits (zero-shot CLIP text)
         #   "image" — image_proto_logits (image-level prototype only)
@@ -248,24 +245,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     self.patch_level.compute_patch_logits(images, encoder, states)
                 )
 
-                # 3) Adaptive evidence weighting for patch-level contribution
-                proto_alpha = torch.tensor(
-                    [
-                        min(alpha_max, _alpha_from_evidence(
-                            states[c]["n_images"], n_half
-                        ))
-                        for c in range(C)
-                    ],
-                    device=device,
-                )
-                
-                # print(f"alpha max: {alpha_max}, n_half: {n_half}, quality_gate: {quality_gate}, tau_patch_proto: {self.fusion.tau_patch_proto}")
-                # coutns = [states[c]["n_images"] for c in range(C)]
-                # alpha = proto_alpha.cpu().numpy()
-                # for c in range(C):
-                #     print(f"PatchModulatedPTA: class {c}: n_images = {coutns[c]}, proto_alpha = {round(alpha[c], 3)}")
-
-                # 4) Update image-level prototype (WITH quality modulation)
+                # 3) Update image-level prototype (WITH quality modulation)
                 soft_logits = F.softmax(clip_logits, dim=-1)
                 refine_feature, target_prototype = _update_text_features_with_quality(
                     image_features,
@@ -278,7 +258,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     quality_modulation=self.quality_modulation,
                 )
 
-                # 5) Image-level proto logits
+                # 4) Image-level proto logits
                 image_proto_logits = (
                     image_features.half() @ refine_feature.half().T
                 )  # [1, C]
@@ -288,7 +268,6 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     image_proto_logits,
                     patch_proto_logits,
                     quality_gate=quality_gate,
-                    proto_alpha=proto_alpha,
                 )
 
                 if conf_source == "text":
@@ -321,7 +300,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                             if torch.is_tensor(quality_gate) else None
                         ),
                         gate_mode="multi" if multi_gate else "single",
-                        proto_alpha=proto_alpha.float().cpu().tolist(),
+                        proto_alpha=1.0,
                         logits={
                             "clip": clip_logits.squeeze(0).float().cpu().tolist(),
                             "image_proto": image_proto_logits.squeeze(0).float().cpu().tolist(),

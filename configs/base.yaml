@@ -13,9 +13,8 @@ patch_level:
   match_threshold: 0.6
   conf_threshold: 0.5
   conf_margin_threshold: 0.05
-  n_half: 15.0
+  multi_gate: true
   soft_nn_top_m: 4
-  proto_alpha_max: 1.0
   quality_eps: 0.001
   exclude_pos: false
   patch_group_threshold: 0.9

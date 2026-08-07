@@ -9,7 +9,14 @@ RECORD_DIR=/tmp/rec_pm_a, once with RECORD_DIR unset — and verifies:
   (c) every line carries the full logits dict with 4 arrays of length C=47;
   (d) proto_stats.true/pred n_clusters + n_images match states[c] captured
       at record time (spot-check via per-batch snapshots);
-  (e) gate_mode == "single" (effective mode; multi_gate config is mis-read).
+  (e) gate_mode == "multi" (nested-first multi_gate read is effective;
+      patch_level.multi_gate=true from the method config);
+  (f) proto_alpha recorded as constant 1.0 (schema stability after alpha
+      machinery removal);
+  (g) multi_gate nested-first read unit test (patch_level wins, top-level
+      fallback works, absent -> False) + resolved-config value check;
+  (h) source assertions: no proto_alpha_max / n_half / _alpha_from_evidence
+      left in models/patch_modulated_pta.py.
 
 GPU required for the bit-identical comparison.
 
@@ -18,6 +25,7 @@ Usage (sbatch):
 """
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -191,10 +199,63 @@ def main():
         "(d) proto_stats.true/pred n_clusters+n_images match states[c] at record time",
     )
 
-    # (e) effective gate mode is single
+    # (e) effective gate mode is multi (nested-first read fixed in T1)
     check(
-        all(l["gate_mode"] == "single" for l in lines),
-        "(e) gate_mode == 'single' on every line",
+        all(l["gate_mode"] == "multi" for l in lines),
+        "(e) gate_mode == 'multi' on every line",
+    )
+
+    # (f) proto_alpha recorded as constant 1.0 (schema stability after T1)
+    check(
+        all(l["proto_alpha"] == 1.0 for l in lines),
+        "(f) proto_alpha == 1.0 on every line",
+    )
+
+    # (g) multi_gate nested-first read unit test — mirrors the exact
+    # expression in models/patch_modulated_pta.py:168
+    def _resolve_multi_gate(cfg):
+        _pl = cfg.get("patch_level", {})
+        return _pl.get("multi_gate", cfg.get("multi_gate", False))
+
+    check(
+        _resolve_multi_gate({"patch_level": {"multi_gate": True}}) is True,
+        "(g) patch_level.multi_gate=true -> True (nested-first wins)",
+    )
+    check(
+        _resolve_multi_gate({"multi_gate": True}) is True,
+        "(g) top-level multi_gate=true fallback -> True",
+    )
+    check(
+        _resolve_multi_gate({"multi_gate": False}) is False,
+        "(g) top-level multi_gate=false -> False",
+    )
+    check(
+        _resolve_multi_gate({}) is False,
+        "(g) absent multi_gate -> False default",
+    )
+    resolved = get_config_file(CONFIG_DIR, DATASET)
+    check(
+        resolved.get("patch_level", {}).get("multi_gate") is True,
+        "(g) resolved cfg patch_level.multi_gate == true",
+    )
+
+    # (h) alpha machinery removed from the adapter source
+    src = open(
+        os.path.join(REPO_ROOT, "models", "patch_modulated_pta.py")
+    ).read()
+    for token in ("proto_alpha_max", "n_half", "_alpha_from_evidence"):
+        check(
+            token not in src,
+            f"(h) no '{token}' in models/patch_modulated_pta.py",
+        )
+    check(
+        re.search(
+            r'multi_gate\s*=\s*bool\(_pl_cfg\.get\('
+            r'"multi_gate",\s*self\.cfg\.get\("multi_gate",\s*False\)\)\)',
+            src,
+        )
+        is not None,
+        "(h) multi_gate read is nested-first-with-fallback",
     )
 
     # summary sanity: total/acc + per-class n_* keys present

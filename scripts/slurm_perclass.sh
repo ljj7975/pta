@@ -67,7 +67,7 @@ N_DS=${#DATASETS[@]}
 # exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL SEED [OVERRIDE]
 #
 # Comment/uncomment individual lines to enable/disable experiments.
-# OVERRIDE is a single top-level KEY=VALUE (e.g. proto_alpha_max=1.0).
+# OVERRIDE is a single top-level KEY=VALUE (e.g. multi_gate=1).
 # NOTE: multi_gate must be overridden numerically (multi_gate=1), NOT as
 # "true" — bool("false") == True in Python, so a string override is a footgun.
 # ---------------------------------------------------------------------------
@@ -98,7 +98,9 @@ exp zeroshot            configs/PTA                   clip_surgery "" "ZeroShot-
 exp zeroshot            configs/PTA                   clip_surgery "" "ZeroShot-CS-s2"   2 ""
 
 # ── Ablations (seed 1 only) ──────────────────────────────────────────
-exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CS-alpha10-s1"    1 "proto_alpha_max=1.0"
+# multi_gate is now read nested-first (patch_level.multi_gate); base.yaml
+# sets patch_level.multi_gate: true, so it is ON by default. Gate-off
+# requires patch_level.multi_gate=false (or top-level multi_gate=0).
 exp patch_modulated_pta configs/patch_modulated_pta clip_surgery "" "PatchModPTA-CS-multigate-s1" 1 "multi_gate=1"
 
 # ---------------------------------------------------------------------------
