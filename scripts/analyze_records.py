@@ -674,6 +674,323 @@ def decide(delta_mean, rho_mean):
     return "INCONCLUSIVE"
 
 
+# ---------------------------------------------------------------------------
+# flip metrics v2 — ground-truth-aware corrections/regressions
+# (additive on top of flip_metrics; NOT part of the decision rule)
+# ---------------------------------------------------------------------------
+
+def resolve_tau_patch_proto(cfg):
+    """``tau_patch_proto`` from the resolved config (top-level or nested).
+
+    Absent on PTA/ZeroShot paths -> None (callers treat it as 0: those
+    mechanisms never add a patch term).
+    """
+    if not isinstance(cfg, dict):
+        return None
+    v = cfg.get("tau_patch_proto")
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    for sub in ("fusion", "patch_level", "image_level", "text_level"):
+        v = cfg.get(sub)
+        if isinstance(v, dict):
+            found = resolve_tau_patch_proto(v)
+            if found is not None:
+                return found
+    return None
+
+
+def _acc_v2(e):
+    """Accuracy summary from a ``{"n", "correct"}`` counter dict."""
+    return {
+        "n": e["n"],
+        "correct": e["correct"],
+        "acc": 100.0 * e["correct"] / e["n"] if e["n"] else None,
+    }
+
+
+def _flip_v2(e):
+    """Corrections/regressions summary from a corr/reg counter dict."""
+    denom = e["corr"] + e["reg"]
+    return {
+        "n": e["n"],
+        "corr": e["corr"],
+        "reg": e["reg"],
+        "acc": 100.0 * e["corr"] / denom if denom else None,
+        "net": e["corr"] - e["reg"],
+        "masked": e.get("masked", 0),
+    }
+
+
+def flip_metrics_v2(samples, tau_img=None, tau_patch_proto=None):
+    """GT-aware per-component corrections/regressions (diagnostic, v2).
+
+    Reconstructs each component prediction from STORED logits only — the
+    ProtoAlphaFusion formula (fusion.py:123-138) with ``proto_alpha`` treated
+    as 1.0 (the post-fix design; an old record's per-class alpha is
+    deliberately NOT applied):
+
+        text-only        = argmax(clip)
+        image-only       = argmax(clip + tau_img * image_proto)
+        patch-only       = argmax(patch_proto)
+        patch-with-image = argmax(clip + tau_img*image_proto
+                                  + tau_patch_proto*patch_proto)
+
+    For each record with ``target`` known, counted relative to the previous
+    component's prediction:
+
+        correction  — previous component wrong, this component right
+        regression  — previous component right, this component wrong
+        flip acc    = corrections / (corrections + regressions)
+        net         = corrections - regressions
+
+    Patch rows are masked to records with ``proto_stats.pred.n_clusters > 0``
+    (cluster availability; ``proto_stats.true`` is the fallback).  Classes
+    with zero cluster-bearing records get no patch attribution — callers must
+    mark them "patch contribution N/A".
+
+    ``tau_img`` / ``tau_patch_proto`` come from the record header's
+    ``resolved_config`` (see :func:`resolve_tau_img` /
+    :func:`resolve_tau_patch_proto`).  ``tau_patch_proto=None`` disables the
+    patch-with-image row (PTA/ZeroShot paths never add the patch term).
+
+    Returns ``{"tau_img", "tau_patch_proto", "n", "aggregate", "per_class"}``;
+    aggregate keys are ``text_only`` / ``image`` / ``patch_alone`` /
+    ``patch_image`` and per_class maps class index to the same counters plus
+    ``n_cluster`` (number of cluster-bearing records for that class).
+    """
+    agg = {
+        "text_only": {"n": 0, "correct": 0},
+        "image": {"n": 0, "corr": 0, "reg": 0},
+        "patch_alone": {"n": 0, "corr": 0, "reg": 0, "masked": 0},
+        "patch_image": {"n": 0, "corr": 0, "reg": 0, "masked": 0},
+    }
+    per = defaultdict(lambda: {
+        "n": 0,
+        "n_cluster": 0,
+        "text_only": {"n": 0, "correct": 0},
+        "image": {"n": 0, "corr": 0, "reg": 0},
+        "patch_alone": {"n": 0, "corr": 0, "reg": 0},
+        "patch_image": {"n": 0, "corr": 0, "reg": 0},
+    })
+
+    for s in samples:
+        t = int(s.get("target", -1))
+        lg = s.get("logits") or {}
+        clip = lg.get("clip")
+        if t < 0 or not clip:
+            continue
+        img = lg.get("image_proto")
+        patch = lg.get("patch_proto")
+        p_text = argmax_idx(clip)
+        if p_text is None:
+            continue
+
+        e = per[t]
+        e["n"] += 1
+        text_correct = p_text == t
+        agg["text_only"]["n"] += 1
+        agg["text_only"]["correct"] += 1 if text_correct else 0
+        e["text_only"]["n"] += 1
+        e["text_only"]["correct"] += 1 if text_correct else 0
+
+        ps = s.get("proto_stats") or {}
+        ncl = None
+        if isinstance(ps.get("pred"), dict) and ps["pred"].get("n_clusters") is not None:
+            ncl = int(ps["pred"]["n_clusters"])
+        elif isinstance(ps.get("true"), dict) and ps["true"].get("n_clusters") is not None:
+            ncl = int(ps["true"]["n_clusters"])
+        has_clusters = (ncl or 0) > 0
+        if has_clusters:
+            e["n_cluster"] += 1
+
+        img_ok = img is not None and tau_img is not None and len(img) == len(clip)
+        patch_ok = patch is not None and len(patch) == len(clip)
+
+        # +image (PTA mechanism): clip + tau_img*image_proto vs text-only.
+        p_img = None
+        if img_ok:
+            p_img = argmax_idx([c + tau_img * g for c, g in zip(clip, img)])
+        if p_img is not None:
+            agg["image"]["n"] += 1
+            e["image"]["n"] += 1
+            if p_img == t:
+                if not text_correct:
+                    agg["image"]["corr"] += 1
+                    e["image"]["corr"] += 1
+            elif text_correct:
+                agg["image"]["reg"] += 1
+                e["image"]["reg"] += 1
+
+        # +patch alone: argmax(patch_proto) vs text-only (cluster-masked).
+        if has_clusters and patch_ok:
+            p_patch = argmax_idx(patch)
+            if p_patch is not None:
+                agg["patch_alone"]["n"] += 1
+                e["patch_alone"]["n"] += 1
+                if p_patch == t:
+                    if not text_correct:
+                        agg["patch_alone"]["corr"] += 1
+                        e["patch_alone"]["corr"] += 1
+                elif text_correct:
+                    agg["patch_alone"]["reg"] += 1
+                    e["patch_alone"]["reg"] += 1
+        else:
+            agg["patch_alone"]["masked"] += 1
+
+        # +patch with image: + tau_patch_proto*patch_proto vs image-only
+        # (isolates what patch ADDS on top of PTA; cluster-masked).
+        if has_clusters and patch_ok and img_ok and tau_patch_proto is not None:
+            p_patch_img = argmax_idx(
+                [c + tau_img * g + tau_patch_proto * p
+                 for c, g, p in zip(clip, img, patch)])
+            if p_patch_img is not None and p_img is not None:
+                agg["patch_image"]["n"] += 1
+                e["patch_image"]["n"] += 1
+                img_correct = p_img == t
+                if p_patch_img == t:
+                    if not img_correct:
+                        agg["patch_image"]["corr"] += 1
+                        e["patch_image"]["corr"] += 1
+                elif img_correct:
+                    agg["patch_image"]["reg"] += 1
+                    e["patch_image"]["reg"] += 1
+        else:
+            agg["patch_image"]["masked"] += 1
+
+    out = {
+        "tau_img": tau_img,
+        "tau_patch_proto": tau_patch_proto,
+        "n": agg["text_only"]["n"],
+        "aggregate": {
+            "text_only": _acc_v2(agg["text_only"]),
+            "image": _flip_v2(agg["image"]),
+            "patch_alone": _flip_v2(agg["patch_alone"]),
+            "patch_image": _flip_v2(agg["patch_image"]),
+        },
+        "per_class": {},
+    }
+    for t in sorted(per):
+        e = per[t]
+        out["per_class"][t] = {
+            "n": e["n"],
+            "n_cluster": e["n_cluster"],
+            "text_only": _acc_v2(e["text_only"]),
+            "image": _flip_v2(e["image"]),
+            "patch_alone": _flip_v2(e["patch_alone"]),
+            "patch_image": _flip_v2(e["patch_image"]),
+        }
+    return out
+
+
+def _flip_cell(e):
+    """'corr/reg (acc%, net)' cell for the markdown tables (— when no flips)."""
+    if e.get("acc") is None:
+        return "—"
+    return "{}/{} ({:.2f}%, {:+.0f})".format(
+        e["corr"], e["reg"], e["acc"], e["net"])
+
+
+def _render_v2_label(lines, label, classnames, m):
+    """Append one label's aggregate + per-class v2 tables to ``lines``."""
+    tau_img = m["tau_img"]
+    tau_pp = m["tau_patch_proto"]
+    tau_img_txt = "{:.1f}".format(tau_img) if tau_img is not None else "n/a"
+    tau_pp_txt = "{:.1f}".format(tau_pp) if tau_pp is not None else "n/a (0.0)"
+    lines.append("### {}  (tau_img = {}, tau_patch_proto = {})".format(
+        label, tau_img_txt, tau_pp_txt))
+    lines.append("")
+    lines.append("| component | n | corrections | regressions | flip acc (%) | net | masked |")
+    lines.append("|---|---|---|---|---|---|---|")
+    a = m["aggregate"]
+    txt = a["text_only"]
+    lines.append("| text-only (baseline) | {} | {} | — | {} | — | — |".format(
+        txt["n"], txt["correct"], _fmt(txt["acc"])))
+    for name, key in (("+image (PTA)", "image"),
+                      ("+patch alone", "patch_alone"),
+                      ("+patch with image", "patch_image")):
+        e = a[key]
+        net_txt = "{:+.0f}".format(e["net"]) if e["acc"] is not None else "—"
+        lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            name, e["n"], e["corr"], e["reg"], _fmt(e["acc"]), net_txt, e["masked"]))
+    lines.append("")
+    lines.append("| class | n | n_cluster | text-only acc (%) | +image (corr/reg, acc%, net) | "
+                 "+patch alone (corr/reg, acc%, net) | +patch with image (corr/reg, acc%, net) |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for cls in sorted(m["per_class"]):
+        e = m["per_class"][cls]
+        name = _classname_of(classnames, cls)
+        if e["n_cluster"] == 0:
+            pa_cell = pi_cell = "patch contribution N/A"
+        else:
+            pa_cell, pi_cell = _flip_cell(e["patch_alone"]), _flip_cell(e["patch_image"])
+        lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            name, e["n"], e["n_cluster"], _fmt(e["text_only"]["acc"]),
+            _flip_cell(e["image"]), pa_cell, pi_cell))
+    lines.append("")
+
+    print("flips-v2 {}: text-only acc={} ({}/{}); +image corr={} reg={} acc={} net={:+.0f}; "
+          "+patch-alone corr={} reg={} acc={} net={:+.0f} (masked {}); "
+          "+patch+img corr={} reg={} acc={} net={:+.0f} (masked {})".format(
+        label, _fmt(a["text_only"]["acc"]), a["text_only"]["correct"], a["text_only"]["n"],
+        a["image"]["corr"], a["image"]["reg"], _fmt(a["image"]["acc"]), a["image"]["net"],
+        a["patch_alone"]["corr"], a["patch_alone"]["reg"],
+        _fmt(a["patch_alone"]["acc"]), a["patch_alone"]["net"], a["patch_alone"]["masked"],
+        a["patch_image"]["corr"], a["patch_image"]["reg"],
+        _fmt(a["patch_image"]["acc"]), a["patch_image"]["net"], a["patch_image"]["masked"]))
+
+
+def cmd_flips_v2(args):
+    records_dir = Path(args.records)
+    out_path = Path(args.out)
+    labels = list_labels(records_dir)
+    if not labels:
+        print("[ERROR] no records found in {}".format(records_dir), file=sys.stderr)
+        return 1
+
+    headers = [load_label_records(records_dir, label)[0] for label in labels]
+    classnames = resolve_classnames(records_dir, labels, headers)
+
+    lines = ["# Ground-Truth-Aware Flip Metrics v2", ""]
+    lines.append("Generated from `{}`".format(records_dir))
+    lines.append("")
+    lines.append("Per-component predictions reconstructed from STORED logits "
+                 "(ProtoAlphaFusion formula, proto_alpha treated as 1.0):")
+    lines.append("")
+    lines.append("- text-only        = argmax(clip)")
+    lines.append("- image-only       = argmax(clip + tau_img*image_proto)")
+    lines.append("- patch-only       = argmax(patch_proto)")
+    lines.append("- patch-with-image = argmax(clip + tau_img*image_proto "
+                 "+ tau_patch_proto*patch_proto)")
+    lines.append("")
+    lines.append("`correction` = previous component wrong -> this component right; "
+                 "`regression` = previous component right -> this component wrong.")
+    lines.append("flip accuracy = corrections / (corrections + regressions); "
+                 "net = corrections - regressions.")
+    lines.append("")
+    lines.append("Patch rows are masked to records with "
+                 "`proto_stats.pred.n_clusters > 0`; classes with no "
+                 "cluster-bearing records are marked `patch contribution N/A`.")
+    lines.append("")
+
+    for label in labels:
+        header, samples = load_label_records(records_dir, label)
+        if not samples:
+            continue
+        cfg = (header or {}).get("resolved_config")
+        tau_img = resolve_tau_img(cfg)
+        tau_pp = resolve_tau_patch_proto(cfg)
+        m = flip_metrics_v2(samples, tau_img, tau_pp)
+        _render_v2_label(lines, label, classnames, m)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("[OK] flip metrics v2 written to {}".format(out_path))
+    return 0
+
+
 def _classname_of(classnames, idx):
     if classnames and idx < len(classnames):
         return classnames[idx]
@@ -866,6 +1183,15 @@ def build_parser():
     p_hyp.add_argument("--win", type=int, default=100, help="rolling-window size (default 100)")
     p_hyp.add_argument("--out", default=DEFAULT_HYPOTHESIS_OUT)
     p_hyp.set_defaults(func=cmd_hypothesis)
+
+    p_flips2 = sub.add_parser(
+        "flips-v2",
+        help="GT-aware flip metrics v2 (corrections/regressions per component)")
+    p_flips2.add_argument("--records", required=True,
+                          help="record dir DIR/<LABEL>/records.jsonl")
+    p_flips2.add_argument("--out", default="outputs/flip_metrics_v2.md",
+                          help="markdown output path")
+    p_flips2.set_defaults(func=cmd_flips_v2)
 
     return parser
 
