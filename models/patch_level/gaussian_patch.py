@@ -39,6 +39,7 @@ _AUG_BLUR_KERNEL_MIN = 3
 _AUG_BLUR_KERNEL_MAX = 11
 _AUG_BLUR_SIGMA_MIN  = 0.1
 _AUG_BLUR_SIGMA_MAX  = 2.0
+_AUG_BLUR_P = 0.30
 
 # Weighted extra-op pool (sample exactly one op per augmented copy).
 _AUG_EXTRA_GRAYSCALE_P = 0.30
@@ -108,8 +109,9 @@ def _augment_image(image: torch.Tensor) -> torch.Tensor:
       - Brightness: additive offset uniform in [-_AUG_BRIGHTNESS_MAG, +_AUG_BRIGHTNESS_MAG]
       - Contrast: linear rescaling around per-channel mean, factor in
         [_AUG_CONTRAST_MIN, _AUG_CONTRAST_MAX]
-      - Gaussian blur: kernel size uniform in [_AUG_BLUR_KERNEL_MIN, _AUG_BLUR_KERNEL_MAX],
-        sigma uniform in [_AUG_BLUR_SIGMA_MIN, _AUG_BLUR_SIGMA_MAX]
+            - Gaussian blur (with probability _AUG_BLUR_P): kernel size uniform in
+                [_AUG_BLUR_KERNEL_MIN, _AUG_BLUR_KERNEL_MAX], sigma uniform in
+                [_AUG_BLUR_SIGMA_MIN, _AUG_BLUR_SIGMA_MAX]
 
         Then exactly one extra operation is sampled from a weighted pool:
             - grayscale, edge-blend, or none.
@@ -147,16 +149,17 @@ def _augment_image(image: torch.Tensor) -> torch.Tensor:
     channel_mean = img.mean(dim=[-2, -1], keepdim=True)  # [C, 1, 1]
     img = contrast_factor * img + (1 - contrast_factor) * channel_mean
 
-    # ── Gaussian blur ──────────────────────────────────────────────────
-    kernel_size = _AUG_BLUR_KERNEL_MIN + int(
-        torch.rand(1).item() * (_AUG_BLUR_KERNEL_MAX - _AUG_BLUR_KERNEL_MIN)
-    )
-    # Ensure kernel size is odd (required by TF.gaussian_blur)
-    kernel_size += kernel_size % 2 == 0
-    sigma = _AUG_BLUR_SIGMA_MIN + torch.rand(1).item() * (
-        _AUG_BLUR_SIGMA_MAX - _AUG_BLUR_SIGMA_MIN
-    )
-    img = TF.gaussian_blur(img, kernel_size=kernel_size, sigma=sigma)
+    # ── Gaussian blur (stochastic) ──────────────────────────────────────
+    if torch.rand(1).item() < _AUG_BLUR_P:
+        kernel_size = _AUG_BLUR_KERNEL_MIN + int(
+            torch.rand(1).item() * (_AUG_BLUR_KERNEL_MAX - _AUG_BLUR_KERNEL_MIN)
+        )
+        # Ensure kernel size is odd (required by TF.gaussian_blur)
+        kernel_size += kernel_size % 2 == 0
+        sigma = _AUG_BLUR_SIGMA_MIN + torch.rand(1).item() * (
+            _AUG_BLUR_SIGMA_MAX - _AUG_BLUR_SIGMA_MIN
+        )
+        img = TF.gaussian_blur(img, kernel_size=kernel_size, sigma=sigma)
 
     # ── Weighted extra op: grayscale/edge/none ────────────────────────────
     img = _apply_weighted_extra_op(img)
