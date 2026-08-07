@@ -1,6 +1,13 @@
 # Hypothesis Metrics — stream-time accuracy vs patch-prototype growth
 
-Generated from `outputs/records`
+Two versions documented here, clearly labeled:
+
+- **PART A (old code)**: generated from `outputs/records` (prior plan, BUGGY config path: single-gate, alpha-capped patch term). Full-DTD tables below are OLD-CODE.
+- **PART B (follow-up revalidation, fixed code, deterministic loader, seed 1, records_v2)**: generated from `outputs/records_v2/subset` (Task 5, plan `patch-proto-revalidation`). Subset tables only. The point-5 bar (rho/delta) was NOT testable: Wave 3 full-DTD per-seed runs were skipped after the Wave 2 subset gate failed.
+
+---
+
+# PART A: Prior plan, old code (preserved history)
 
 Hypothesis (pre-registered): *as you build better patch-level prototypes over time, classification performance increases.*
 
@@ -594,3 +601,79 @@ Per-seed:
   - PatchModPTA-CS-s2: delta = 4.61 pp, rho = -0.37
 
 DECISION: INCONCLUSIVE (delta_mean=5.02 pp, rho_mean=-0.44)
+
+---
+
+# PART B: Follow-up revalidation (fixed code, deterministic loader, seed 1, records_v2)
+
+Generated from `outputs/records_v2/subset` (Task 5, plan `patch-proto-revalidation`). Subset means = `mean(correct)` over the 180 records per run. Classes (5-class closed set): bumpy(0), flecked(1), lacelike(2), lined(3), pitted(4) (`outputs/subset_classes.txt`). Fixed-code fingerprint: `gate_mode=="multi"` and `proto_alpha==1.0` on 180/180 PatchModPTA records; `fusion.tau_patch_proto` nested 2.5/5.0/10.0, top-level key absent. Sources: `.omo/evidence/wave2-gate.md`, `.omo/evidence/task-5-sweep-attest.txt`, `.omo/evidence/task-6-gate-check.txt`, `.omo/evidence/task-6-cluster-count.txt`, `/tmp/flip-subset.md`.
+
+## Subset accuracy per run (seed 1, 180 records)
+
+| run | method | tau | n | correct | subset mean acc (%) |
+|---|---|---|---|---|---|
+| PatchModPTA-fixed-tau2.5-s1 | PatchModPTA-fixed | 2.5 | 180 | 90 | **50.00** |
+| PatchModPTA-fixed-tau5.0-s1 | PatchModPTA-fixed | 5.0 | 180 | 85 | **47.22** |
+| PatchModPTA-fixed-tau10-s1 | PatchModPTA-fixed | 10.0 | 180 | 79 | **43.89** |
+| PTA-fixed-s1 | PTA-fixed | n/a | 180 | 93 | **51.67** |
+| ZeroShot-fixed-s1 | ZeroShot-fixed | n/a | 180 | 87 | **48.33** |
+
+Independently recomputed (`.omo/evidence/task-6-gate-check.txt`, read-only script) and reproduced by the sweep attestation (`.omo/evidence/task-5-sweep-attest.txt` §3) and the runner result file (`outputs/result_subset_v2.txt`) exactly. The tau sweep is strictly monotonic decreasing in tau (spread 6.11 pp): the tau read is LIVE, the sweep has signal.
+
+**Gate check (pre-registered, `.omo/evidence/gate-noise-sizing.md` §5)**: proceed iff `max over tau of (PatchModPTA-fixed-sub mean) >= PTA-fixed-sub mean`. max_tau = 50.00 (tau 2.5) < PTA-fixed-sub = 51.67 → gate **FAILS** (difference -1.67 pp, no tie). **STOP branch: Wave 3 NOT run.**
+
+**Point-5 bar NOT testable**: `rho_mean > 0 AND delta_mean > 0` requires full-DTD per-seed PatchModPTA stream metrics (delta = last-half minus first-half accuracy; rho = Spearman of cluster growth vs last-half per-class accuracy). Those runs were Wave 3 scope and were skipped. The subset means above are the gate instrument only; rho/delta are NOT computed from subset records and the point-5 bar was never evaluated.
+
+## Subset accuracy per class (seed 1, n=36 per class)
+
+PatchModPTA-fixed-tau2.5 vs PTA-fixed vs ZeroShot-fixed (Δ vs PTA in pp) [`.omo/evidence/wave2-gate.md` §3.1]:
+
+| class | PatchModPTA tau2.5 (%) | PTA (%) | ZeroShot (%) | Δ vs PTA (pp) |
+|---|---|---|---|---|
+| bumpy | 72.2 (26/36) | 80.6 (29/36) | 66.7 (24/36) | **-8.3** |
+| flecked | 0.0 (0/36) | 2.8 (1/36) | 0.0 (0/36) | **-2.8** |
+| lacelike | 69.4 (25/36) | 75.0 (27/36) | 77.8 (28/36) | **-5.6** |
+| lined | 91.7 (33/36) | 88.9 (32/36) | 75.0 (27/36) | **+2.8** |
+| pitted | 16.7 (6/36) | 11.1 (4/36) | 22.2 (8/36) | **+5.6** |
+
+Full tau sweep per class (Δ vs PTA, pp):
+
+| class | tau2.5 | tau5.0 | tau10 |
+|---|---|---|---|
+| bumpy | -8.3 | -8.3 | -8.3 |
+| flecked | -2.8 | -2.8 | -2.8 |
+| lacelike | -5.6 | -22.2 | -36.1 |
+| lined | +2.8 | +5.6 | +0.0 |
+| pitted | +5.6 | +5.6 | +8.3 |
+
+3 of 5 classes worsened; lacelike collapses monotonically with tau.
+
+## Cluster availability per class (true-side `proto_stats`, n=36 per class)
+
+Counts = records of that class with true-side `n_clusters == 0` [`.omo/evidence/task-6-cluster-count.txt`]:
+
+| run | bumpy | flecked | lacelike | lined | pitted | classes fully zero |
+|---|---|---|---|---|---|---|
+| PatchModPTA-fixed-tau2.5-s1 | 0/36 | 4/36 | 1/36 | 1/36 | 2/36 | 0 |
+| PatchModPTA-fixed-tau5.0-s1 | 0/36 | 4/36 | 1/36 | 1/36 | 2/36 | 0 |
+| PatchModPTA-fixed-tau10-s1 | 0/36 | 4/36 | 1/36 | 1/36 | 2/36 | 0 |
+| PTA-fixed-s1 | 36/36* | 36/36* | 36/36* | 36/36* | 36/36* | 5 |
+| ZeroShot-fixed-s1 | 36/36* | 36/36* | 36/36* | 36/36* | 36/36* | 5 |
+
+\* PTA/ZeroShot `proto_stats` sides are null on all 180 records (patch term structurally absent by design). Every PatchModPTA class forms clusters on ≥32 of 36 samples; the gate miss is not attributable to missing clusters.
+
+## Flip diagnostics summary (flips-v2, GT-aware, subset records)
+
+Per-component predictions reconstructed from STORED logits (ProtoAlphaFusion formula, proto_alpha = 1.0). Full per-class tables in `outputs/hypothesis_findings.md` Part B §B.4. Class-name caveat: subset headers carry `classnames==[]`; CLI display order was full-DTD names, post-processed to the true subset classes (verified against the ZeroShot per-class column above).
+
+| run | text-only acc (%) | +image (corr/reg, acc %, net) | +patch-alone (corr/reg, acc %, net) | +patch-with-image (corr/reg, acc %, net) |
+|---|---|---|---|---|
+| PTA-fixed-s1 | 48.33 (87/180) | 15/9 (62.50, **+6**) | masked 180 | masked 180 |
+| PatchModPTA-fixed-tau2.5-s1 | 48.33 (87/180) | 12/6 (66.67, **+6**) | 17/39 (30.36, **-22**) | 2/6 (25.00, **-4**) |
+| PatchModPTA-fixed-tau5.0-s1 | 48.33 (87/180) | 12/6 (66.67, **+6**) | 17/39 (30.36, **-22**) | 6/14 (30.00, **-8**) |
+| PatchModPTA-fixed-tau10-s1 | 48.33 (87/180) | 12/6 (66.67, **+6**) | 18/39 (31.58, **-21**) | 8/22 (26.67, **-14**) |
+| ZeroShot-fixed-s1 | 48.33 (87/180) | masked | masked 180 | masked 180 |
+
+The image-EMA component carries the entire gain (+6 net in every run); patch-alone is a net detractor (-21 to -22); the fused patch contribution worsens with tau (-4/-8/-14).
+
+**Part B bottom line**: gate FAILED (50.00 < 51.67), STOP branch, Wave 3 not run, point-5 bar NOT tested. The old INCONCLUSIVE verdict (Part A above, old code) is preserved as history and is superseded in context by the Part B gate failure for the fixed-code path.
