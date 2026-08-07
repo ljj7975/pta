@@ -337,7 +337,8 @@ def build_data_loader(
     tfm=None,
     is_train=True,
     shuffle=False,
-    dataset_wrapper=None
+    dataset_wrapper=None,
+    seed=None
 ):
 
     if dataset_wrapper is None:
@@ -347,11 +348,12 @@ def build_data_loader(
     data_loader = torch.utils.data.DataLoader(
         dataset_wrapper(data_source, input_size=input_size, transform=tfm, is_train=is_train),
         batch_size=batch_size,
-        num_workers=8,
+        num_workers=(0 if seed is not None else 8),
         shuffle=shuffle,
         drop_last=False,
         pin_memory=(torch.cuda.is_available()),
-        worker_init_fn=worker_init_fn
+        worker_init_fn=(None if seed is not None else worker_init_fn),
+        generator=(torch.Generator().manual_seed(seed) if (seed is not None and shuffle) else None)
     )
     assert len(data_loader) > 0
 

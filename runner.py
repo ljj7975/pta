@@ -219,11 +219,12 @@ def main():
 
         if args.class_file is not None:
             test_loader, classnames, template = build_subset_test_data_loader(
-                dataset_name, args.data_root, preprocess, class_file=args.class_file
+                dataset_name, args.data_root, preprocess, class_file=args.class_file,
+                seed=args.seed,
             )
         else:
             test_loader, classnames, template = build_test_data_loader(
-                dataset_name, args.data_root, preprocess, shuffle=True
+                dataset_name, args.data_root, preprocess, shuffle=True, seed=args.seed,
             )
         text_embeddings = clip_classifier(classnames, template, encoder)
 

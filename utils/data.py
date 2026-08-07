@@ -51,7 +51,7 @@ class _LabelRemapLoader:
         return len(self._loader)
 
 
-def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffle: bool = True):
+def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffle: bool = True, seed: int = None):
     """Build a test DataLoader for the given dataset.
 
     Returns ``(test_loader, classnames, template)``.
@@ -59,6 +59,14 @@ def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffl
     For ImageNet-A/R/S the loader is wrapped with ``_LabelRemapLoader`` so that
     200-class subset labels are remapped to 1000-class ImageNet labels at
     iteration time (matching the paper evaluation protocol).
+
+    ``seed`` (optional) makes the shuffled stream deterministic: the loader is
+    built single-worker (``num_workers=0``) with an explicit
+    ``torch.Generator().manual_seed(seed)`` — the stock 8-worker shuffled
+    loader yields batches in nondeterministic completion order on this cluster
+    (see ``tests/test_records_zeroshot.py:14-17``). When ``seed`` is None the
+    legacy behavior (8 workers + worker_init_fn) is preserved. The ImageNet
+    "I" loader keeps its own ``num_workers=8`` construction unchanged.
     """
     if dataset_name == "I":
         dataset = ImageNet(root_path, preprocess)
@@ -80,6 +88,7 @@ def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffl
             is_train=False,
             tfm=preprocess,
             shuffle=shuffle,
+            seed=seed,
         )
 
         if dataset_name in ["A", "R", "S"]:
@@ -114,6 +123,7 @@ def build_test_data_loader(dataset_name: str, root_path: str, preprocess, shuffl
             is_train=False,
             tfm=preprocess,
             shuffle=shuffle,
+            seed=seed,
         )
         return test_loader, dataset.classnames, dataset.template
 
@@ -155,6 +165,7 @@ def build_subset_test_data_loader(
     class_names=None,
     class_file=None,
     shuffle: bool = True,
+    seed: int = None,
 ):
     """Build a closed-set test DataLoader restricted to a subset of classes.
 
@@ -203,5 +214,6 @@ def build_subset_test_data_loader(
         is_train=False,
         tfm=preprocess,
         shuffle=shuffle,
+        seed=seed,
     )
     return subset_loader, list(class_names), dataset.template
