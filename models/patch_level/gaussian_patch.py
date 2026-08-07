@@ -8,6 +8,7 @@ This is the patch-level component that implements BasePatchLevel, intended to
 be composed into a full adapter (e.g., via PTA's multi-component setup).
 """
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 import clip as _clip  # local vendored CLIP — for tokenize()
 
@@ -39,12 +40,68 @@ _AUG_BLUR_KERNEL_MAX = 11
 _AUG_BLUR_SIGMA_MIN  = 0.1
 _AUG_BLUR_SIGMA_MAX  = 2.0
 
+# Weighted extra-op pool (sample exactly one op per augmented copy).
+_AUG_EXTRA_GRAYSCALE_P = 0.30
+_AUG_EXTRA_EDGE_BLEND_P = 0.30
+_AUG_EXTRA_NONE_P = 0.40 # not explicitly used
+
+# Extra-op magnitudes.
+_AUG_EDGE_BLEND_MIN = 0.25
+_AUG_EDGE_BLEND_MAX = 0.55
+
+
+def _sample_uniform(low: float, high: float) -> float:
+    return low + (high - low) * torch.rand(1).item()
+
+
+def _to_grayscale_like(img: torch.Tensor) -> torch.Tensor:
+    """Convert to grayscale while preserving [C, H, W] shape."""
+    c = img.shape[0]
+    if c == 3:
+        gray = TF.rgb_to_grayscale(img, num_output_channels=1)
+        return gray.repeat(3, 1, 1)
+    gray = img.mean(dim=0, keepdim=True)
+    return gray.repeat(c, 1, 1)
+
+
+def _edge_map_like(img: torch.Tensor) -> torch.Tensor:
+    """Sobel edge magnitude map with per-channel shape preservation."""
+    x = img.unsqueeze(0)  # [1, C, H, W]
+    c = x.shape[1]
+    kx = torch.tensor([[1.0, 0.0, -1.0], [2.0, 0.0, -2.0], [1.0, 0.0, -1.0]], device=x.device, dtype=x.dtype)
+    ky = torch.tensor([[1.0, 2.0, 1.0], [0.0, 0.0, 0.0], [-1.0, -2.0, -1.0]], device=x.device, dtype=x.dtype)
+    kx = kx.view(1, 1, 3, 3).repeat(c, 1, 1, 1)
+    ky = ky.view(1, 1, 3, 3).repeat(c, 1, 1, 1)
+    gx = F.conv2d(x, kx, padding=1, groups=c)
+    gy = F.conv2d(x, ky, padding=1, groups=c)
+    mag = torch.sqrt(gx.pow(2) + gy.pow(2) + 1e-12)
+    mag = mag / mag.mean(dim=[2, 3], keepdim=True).clamp(min=1e-8)
+    return mag.squeeze(0)
+
+
+def _apply_weighted_extra_op(img: torch.Tensor) -> torch.Tensor:
+    """Sample and apply one extra geometry-focused op from a weighted pool."""
+    r = torch.rand(1).item()
+    p_gray = _AUG_EXTRA_GRAYSCALE_P
+    p_edge = p_gray + _AUG_EXTRA_EDGE_BLEND_P
+
+    if r < p_gray:
+        return _to_grayscale_like(img)
+
+    if r < p_edge:
+        lam = _sample_uniform(_AUG_EDGE_BLEND_MIN, _AUG_EDGE_BLEND_MAX)
+        edges = _edge_map_like(img)
+        return (1.0 - lam) * img + lam * edges
+
+    # "none" path keeps the base chain unchanged.
+    return img
+
 
 def _augment_image(image: torch.Tensor) -> torch.Tensor:
     """
     Apply a randomly-parameterized composite augmentation to a CLIP-preprocessed image tensor.
 
-    All five transforms are applied jointly each call:
+        Base transforms are always applied each call:
       - Rotation: uniform ±_AUG_ROTATION_DEG degrees
       - Affine (translation + scale): uniform translation ±_AUG_TRANSLATE_FRAC
         of each spatial dimension, scale uniform in [_AUG_SCALE_MIN, _AUG_SCALE_MAX]
@@ -53,6 +110,9 @@ def _augment_image(image: torch.Tensor) -> torch.Tensor:
         [_AUG_CONTRAST_MIN, _AUG_CONTRAST_MAX]
       - Gaussian blur: kernel size uniform in [_AUG_BLUR_KERNEL_MIN, _AUG_BLUR_KERNEL_MAX],
         sigma uniform in [_AUG_BLUR_SIGMA_MIN, _AUG_BLUR_SIGMA_MAX]
+
+        Then exactly one extra operation is sampled from a weighted pool:
+            - grayscale, edge-blend, or none.
 
     Brightness and contrast are implemented as raw tensor ops (no [0,1] clamping)
     so they remain valid for CLIP's zero-centred normalised pixel values.
@@ -97,6 +157,9 @@ def _augment_image(image: torch.Tensor) -> torch.Tensor:
         _AUG_BLUR_SIGMA_MAX - _AUG_BLUR_SIGMA_MIN
     )
     img = TF.gaussian_blur(img, kernel_size=kernel_size, sigma=sigma)
+
+    # ── Weighted extra op: grayscale/edge/none ────────────────────────────
+    img = _apply_weighted_extra_op(img)
 
     return img.unsqueeze(0).to(dtype=image.dtype)       # [1, C, H, W]
 
@@ -415,14 +478,17 @@ class GaussianPatchLevel(BasePatchLevel):
             )
             patches_norm = patches_norm[keep_mask]  # [P_filtered, D]
 
-        # Map filtered indices back to original grid positions (0..P-1)
+        # Map filtered indices to (view_idx, patch_idx_within_view) pairs.
         # When filter_mode="none", keep_mask is None and this is identity.
+        # This allows the visualization script to retrieve the correct patch
+        # from the correct augmented view (not just the original image).
         P = 14 * 14
         if keep_mask is not None:
             _concat_indices = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
-            _filtered_to_grid = (_concat_indices % P).long()
         else:
-            _filtered_to_grid = torch.arange(patches_norm.shape[0], device=patches_norm.device).long()
+            _concat_indices = torch.arange(patches_norm.shape[0], device=patches_norm.device).long()
+        _filtered_to_view = (_concat_indices // P).long()      # which augmented view
+        _filtered_to_grid = (_concat_indices % P).long()       # patch position within view
 
         centers = state["centers"]     # [K, D]
         apps = state["appearance"]     # [K]
@@ -514,9 +580,8 @@ class GaussianPatchLevel(BasePatchLevel):
 
         def _merge_top3(existing, new_candidates):
             merged = list(existing)
-            for pidx, iidx, sim in new_candidates:
-                merged.append((pidx, iidx, sim))
-            merged.sort(key=lambda x: x[2], reverse=True)
+            merged.extend(new_candidates)
+            merged.sort(key=lambda x: x[3], reverse=True)
             return merged[:_TOP3]
 
         if old_K > 0:
@@ -528,7 +593,8 @@ class GaussianPatchLevel(BasePatchLevel):
                     candidate_sims = sims_to_centers[candidate_indices, k]
                     top_vals, top_local_pos = candidate_sims.topk(min(_TOP3, candidate_sims.numel()))
                     new_cands = [
-                        (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx, float(sim))
+                        (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx,
+                         int(_filtered_to_view[candidate_indices[pos]].item()), float(sim))
                         for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                     ]
                     new_top_rep.append(_merge_top3(old_entries, new_cands))
@@ -541,7 +607,8 @@ class GaussianPatchLevel(BasePatchLevel):
                 candidate_sims = sims_to_centers[candidate_indices, 0]
                 top_vals, top_local_pos = candidate_sims.topk(min(_TOP3, candidate_sims.numel()))
                 new_top_rep.append([
-                    (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx, float(sim))
+                    (int(_filtered_to_grid[candidate_indices[pos]].item()), current_image_idx,
+                     int(_filtered_to_view[candidate_indices[pos]].item()), float(sim))
                     for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                 ])
             else:
@@ -553,7 +620,8 @@ class GaussianPatchLevel(BasePatchLevel):
                 sims_new = sims_to_centers[group_idx, new_k]
                 top_vals, top_local_pos = sims_new.topk(min(_TOP3, sims_new.numel()))
                 new_top_rep.append([
-                    (int(_filtered_to_grid[group_idx[pos]].item()), current_image_idx, float(sim))
+                    (int(_filtered_to_grid[group_idx[pos]].item()), current_image_idx,
+                     int(_filtered_to_view[group_idx[pos]].item()), float(sim))
                     for pos, sim in zip(top_local_pos.tolist(), top_vals.tolist())
                 ])
             else:

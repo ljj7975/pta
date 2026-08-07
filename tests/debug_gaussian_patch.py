@@ -488,9 +488,15 @@ def _save_step_figure(
                 mu_np = details["mu"].cpu().numpy()
                 sigma_np = details["sigma"].cpu().numpy()
                 z_np = details["z"].cpu().numpy()
+                w_norm_np = details.get("w_norm")
+                w_norm_str = (
+                    f" wn={w_norm_np[k]:.4f}"
+                    if w_norm_np is not None else ""
+                )
                 score_str = (
                     f"{cnt_str} s={best_per_proto[k]:.3f} μ={mu_np[k]:.3f} "
-                    f"σ={sigma_np[k]:.3f} n={z_np[k]:.4f} → w={weighted[k]:.4f}"
+                    f"σ={sigma_np[k]:.3f} n={z_np[k]:.4f}{w_norm_str}"
+                    f" → w={weighted[k]:.4f}"
                 )
             else:
                 score_str = f"{cnt_str} s={best_per_proto[k]:.3f} → w={weighted[k]:.4f}"
@@ -603,6 +609,7 @@ def _build_cfg(args, filter_mode: str) -> dict:
             "proto_stats_sigma_eps":        1e-6,
             "proto_stats_sigma_warn":       1e-4,
             "proto_stats_log_every":        0,
+            "appearance_min_weight":        args.appearance_min_weight,
         }
     }
 
@@ -832,20 +839,23 @@ def parse_args():
     p.add_argument("--match-threshold",     type=float, default=0.60)
     p.add_argument("--max-k",               type=int,   default=20,
                    help="Max clusters per class (default: 20).")
-    p.add_argument("--aggregation",         default="zscore_cdf",
+    p.add_argument("--aggregation",         default="zscore",
                    choices=["top_m_mean", "max", "sum", "mean",
                             "top_m_mean_plus_mean", "weighted_mean",
-                            "zscore_pdf", "zscore_cdf", "zscore_cdf_modulated"],
-                   help="Prototype-score aggregation (default: zscore_cdf). "
-                        "zscore_cdf = pure CDF (cross-class comparable); "
-                        "zscore_cdf_modulated = raw × CDF (hybrid); "
-                        "zscore_pdf = raw × exp(-0.5*z^2).")
+                            "zscore", "zscore_cdf"],
+                   help="Prototype-score aggregation (default: zscore). "
+                        "zscore = raw signed z-score (unbounded); "
+                        "zscore_cdf = Φ(z) (CDF of z-score).")
     p.add_argument("--top-m",               type=int,   default=4,
                    help="M for the top_m_* aggregations (default: 4).")
     p.add_argument("--proto-stats-min-count", type=int, default=2,
                    help="Reference observations before a prototype's z-score is "
                         "trusted (default: 2, vs 10 in production configs — this "
                         "script only walks a few images).")
+    p.add_argument("--appearance-min-weight", type=float, default=0.0,
+                   help="Minimum appearance weight (appeared / total images) for a "
+                        "prototype to contribute. Prototypes below this threshold "
+                        "are zeroed out (default: 0.0 = no filtering).")
     p.add_argument("--filter-threshold",    type=float, default=0.7,
                    help="Threshold on normalised [0,1] score for patch filtering (default: 0.5).")
     p.add_argument("--seed",                type=int,   default=42,

@@ -83,13 +83,13 @@ exp() {
 # ── CLIPSurgery ──────────────────────────────────────────────────────
 exp zeroshot            configs/PTA                   clip_surgery    ""                           "ZeroShot-CS"
 exp pta                 configs/PTA                   clip_surgery    ""                           "PTA-CS"
-exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PMP-CS"
+exp patch_modulated_pta configs/patch_modulated_pta   clip_surgery    ""                           "PatchModPTA-CS"
 exp diagnostic_pta      configs/diagnostic_pta        clip_surgery    ""                           "PatchOnly-CS"
 
 # ── Regular CLIP ────────────────────────────────────────────────────
 exp zeroshot            configs/PTA                   clip            ""                           "ZeroShot-CLIP"
 exp pta                 configs/PTA                   clip            ""                           "PTA-CLIP"
-exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PMP-CLIP"
+exp patch_modulated_pta configs/patch_modulated_pta   clip            ""                           "PatchModPTA-CLIP"
 exp diagnostic_pta      configs/diagnostic_pta        clip            ""                           "PatchOnly-CLIP"
 
 # ---------------------------------------------------------------------------
