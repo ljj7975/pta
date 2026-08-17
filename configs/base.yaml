@@ -33,9 +33,10 @@ patch_level:
   proto_stats_sigma_eps: 1.0e-6      # floor on sigma when dividing
   proto_stats_sigma_warn: 1.0e-4     # below this sigma a prototype is flagged near-degenerate
   proto_stats_log_every: 0           # print a stats health line every N images (0 = off)
+  augment_patch_logits: false        # augment patch evidence (edge+grayscale) in compute_patch_logits
 
 fusion:
   type: ProtoAlphaFusion
   tau_text: 1.0
-  patch_squash: none            # none | tanh — bound the patch term before fusion
-  patch_squash_scale: 3.0       # tanh(patch_logits / scale)
+  patch_squash: tanh            # none | tanh — bound the patch term before fusion
+  patch_squash_scale: 1.0       # tanh(patch_logits / scale)

@@ -153,7 +153,17 @@ def test_records(record_dir):
     check(summary["seed"] == SEED, "summary.seed == 42")
     check(summary["total"] == MAX_BATCHES, "summary.total == 30")
     check(isinstance(summary["acc"], float), "summary.acc is float")
-    check(summary["per_class"] == {}, "summary.per_class == {}")
+    check(len(summary["per_class"]) == C_CLASSES, "summary.per_class has C=47 entries")
+    for c, v in summary["per_class"].items():
+        check(
+            set(v.keys()) == {"total", "correct", "acc"},
+            f"summary.per_class.{c} carries total/correct/acc",
+        )
+        if v["total"] > 0:
+            check(
+                abs(v["acc"] - 100.0 * v["correct"] / v["total"]) < 1e-9,
+                f"summary.per_class.{c}.acc == 100*correct/total",
+            )
 
 
 def main():

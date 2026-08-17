@@ -110,6 +110,11 @@ class PTAAdapter(BaseAdapter):
                 refine_feature
             )                                                   # [C, D]
 
+            # Per-class accuracy accumulators for the summary's per_class dict.
+            num_classes = text_embeddings.shape[1]
+            cls_total = [0] * num_classes
+            cls_correct = [0] * num_classes
+
             # Support early termination via MAX_BATCHES env var
             max_batches = os.environ.get("MAX_BATCHES")
             if max_batches is not None:
@@ -157,6 +162,11 @@ class PTAAdapter(BaseAdapter):
                 acc = cls_acc(final_logits, target)
                 accuracies.append(acc)
 
+                # Per-class accuracy accumulation (consumed by summary below).
+                cls_total[int(target.item())] += 1
+                if acc:
+                    cls_correct[int(target.item())] += 1
+
                 # ── RECORD PER-SAMPLE (env-gated, behavior-neutral) ───────
                 if record_dir:
                     write_record(
@@ -190,13 +200,22 @@ class PTAAdapter(BaseAdapter):
 
         # ── SUMMARY (env-gated, behavior-neutral) ──────────────────────────
         if record_dir:
+            per_class = {}
+            for c in range(num_classes):
+                total_c = cls_total[c]
+                correct_c = cls_correct[c]
+                per_class["class_{}".format(c)] = {
+                    "total": total_c,
+                    "correct": correct_c,
+                    "acc": (100.0 * correct_c / total_c) if total_c else 0.0,
+                }
             write_summary(
                 method=os.environ.get("RESULT_LABEL", "PTA"),
                 dataset=dataset_name,
                 seed=int(os.environ.get("SEED", 1)),
                 total=len(accuracies),
                 acc=final_acc,
-                per_class={},
+                per_class=per_class,
             )
 
         # Append results to output file (append mode, multiple runs accumulate)

@@ -7,32 +7,43 @@
 #SBATCH --mem=16G
 #SBATCH --gpus-per-node=1
 #SBATCH --time=5:00:00
-#SBATCH --array=0-9
+#SBATCH --array=0-149
 #SBATCH --output=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.out
 #SBATCH --error=/share_98/projects/brandon/repos/pta/logs/pta_proto_zscore_%x-%A_%a.err
 
 # ============================================================================
-# Prototype Score Normalization — Final Clean Sweep
+# Prototype Score Normalization Sweep
 #
-# Four active methods, all with appearance_min_weight=0.5:
-#   zscore                  — raw signed z-score, appearance-weighted sum.
-#   zscore_cdf              — Φ(z), appearance-weighted sum.
-#   zscore-MG               — same as zscore but with multi_gate=true
-#   zscore_cdf-MG           — same as CDF but with multi_gate=true
+# Compares raw prototype-score aggregation against per-prototype normalized
+# score aggregation.  Two bounded transforms are available:
 #
-# Multi-gate mode updates ALL classes whose confidence exceeds the threshold
-# (no margin check), so several prototypes may update per image. Default
-# single-gate only updates the single top-1 class if confidence-margin passes.
+#   zscore_cdf  (default) — Φ(z): maps z ∈ (-∞,+∞) → (0,1) via the normal CDF.
+#                            Preserves cross-prototype comparability; always ≥ 0.
+#   zscore_abs            — |z|:  absolute z-score, always ≥ 0.
+#                            Treats above/below mean symmetrically.
 #
-# Setting  diagnostic_pta + fusion.mode=patch_only
-#          final_logits ARE the patch scores, so the comparison is a pure
-#          argmax over aggregated prototype scores — scale-invariant, no tau
-#          to tune. This is the cleanest read on whether normalisation helps.
+# Setting 2  diagnostic_pta + fusion.mode=patch_only
+#            final_logits ARE the patch scores, so the comparison is a pure
+#            argmax over aggregated prototype scores — scale-invariant, no tau
+#            to tune. This is the cleanest read on whether normalization helps.
+#
+# Setting 1  patch_modulated_pta
+#            patch scores enter a linear fusion as
+#                tau_patch_proto * proto_alpha * patch_logits
+#            tau=20 was tuned for raw Gaussian scores in [0, 1]; normalized
+#            scores are bounded differently, so tau is swept.
+#
+# CAVEAT (not swept here): quality_gate = var / (var + quality_eps) with
+# quality_eps=1e-3 was tuned for [0,1] scores and may saturate on the
+# normalized scale.  Harmless for ProtoAlphaFusion (the configured default,
+# which ignores the gate), but it also modulates the image-level EMA in
+# patch_modulated_pta via quality_modulation.  Worth a follow-up sweep on
+# patch_level.quality_eps.
 #
 # HOW TO USE
 # ----------
 # 1. Set CLIP_MODEL / EXTRA_OVERRIDES below.
-# 2. Update --array to match N_EXP x N_DS (currently 6 x 5 = 30 → 0-29).
+# 2. Update --array to match N_EXP x N_DS (currently 30 x 5 = 150 → 0-149).
 # 3. sbatch scripts/slurm_proto_zscore.sh
 #
 # Task mapping:
@@ -76,6 +87,7 @@ N_DS=${#DATASETS[@]}
 # Experiment registry
 # exp METHOD CONFIG_DIR CLIP_MODEL CLIP_CHECKPOINT LABEL OVERRIDE
 # ---------------------------------------------------------------------------
+# N_EXP x N_DS currently = 30 x 5 = 150 → --array=0-149
 _METHODS=()
 _CONFIG_DIRS=()
 _CLIP_MODELS=()
@@ -92,9 +104,78 @@ exp() {
     _OVERRIDES+=("$6")
 }
 
-exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "PatchOnly-CS" "$EXTRA_OVERRIDES"
+# ── Setting 2: diagnostic_pta, patch_only (scale-invariant argmax) ──────────
+# Raw baseline
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-Raw" \
+    "fusion.mode=patch_only patch_level.aggregation=weighted_mean $EXTRA_OVERRIDES"
+# CDF vs ABS — default stats
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs $EXTRA_OVERRIDES"
+# CDF vs ABS — min_count=20
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF-MinC20" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf patch_level.proto_stats_min_count=20 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS-MinC20" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs patch_level.proto_stats_min_count=20 $EXTRA_OVERRIDES"
 
-exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "PMP-CS" "$EXTRA_OVERRIDES"
+# ── Setting 2: stale-stats fixes — CDF vs ABS ──────────────────────────────
+# EMA decay
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF-EMA95" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS-EMA95" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF-EMA99" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS-EMA99" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+# Center-aware + EMA
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF-EMA95-CA" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS-EMA95-CA" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-CDF-EMA99-CA" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_cdf patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp diagnostic_pta configs/diagnostic_pta $CLIP_MODEL "" "patchonly-ABS-EMA99-CA" \
+    "fusion.mode=patch_only patch_level.aggregation=zscore_abs patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+
+# ── Setting 1: patch_modulated_pta — CDF vs ABS tau sweep ──────────────────
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-Raw-TopM" \
+    "$EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau0.5" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=0.5 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau0.5" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=0.5 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau1" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=1.0 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau1" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=1.0 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau2" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=2.0 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau2" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=2.0 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau5" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=5.0 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau5" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=5.0 $EXTRA_OVERRIDES"
+
+# ── Setting 1: CDF vs ABS — stale-stats fixes at Tau1 ──────────────────────
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau1-EMA95" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau1-EMA95" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau1-EMA99" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau1-EMA99" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau1-EMA95-CA" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau1-EMA95-CA" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.95 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-CDF-Tau1-EMA99-CA" \
+    "patch_level.aggregation=zscore_cdf fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
+exp patch_modulated_pta configs/patch_modulated_pta $CLIP_MODEL "" "pm-ABS-Tau1-EMA99-CA" \
+    "patch_level.aggregation=zscore_abs fusion.tau_patch_proto=1.0 patch_level.proto_stats_mode=ema_center_aware patch_level.proto_stats_ema_decay=0.99 $EXTRA_OVERRIDES"
 
 # ---------------------------------------------------------------------------
 # Derived values
@@ -139,7 +220,7 @@ echo "  Node       : $(hostname)"
 echo "========================================================================"
 
 export RESULT_LABEL="${EXP_LABEL}"
-export RESULT_FILE="outputs/result.txt"
+export RESULT_FILE="outputs/proto_zscore_results.txt"
 
 CMD=(python -u runner.py
     --method "$METHOD"

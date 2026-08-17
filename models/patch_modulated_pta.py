@@ -26,13 +26,20 @@ from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.patch_level import create as create_patch_level
 from utils.clip_inference import _safe_normalize
-from models.fusion import QualityGatedFusion, ProtoAlphaFusion
+from models.fusion import (
+    AgreementGateFusion,
+    MajorityVoteFusion,
+    ProtoAlphaFusion,
+    QualityGatedFusion,
+)
 
 # Map of fusion type strings to classes.
 FUSION_REGISTRY = {
     "QualityGatedFusion": QualityGatedFusion,
     "ProtoAlphaFusion": ProtoAlphaFusion,
     "NoQualityGateFusion": ProtoAlphaFusion,  # backward compat alias
+    "MajorityVoteFusion": MajorityVoteFusion,
+    "AgreementGateFusion": AgreementGateFusion,
 }
 from utils import cls_acc, get_clip_logits
 from utils.records import write_record_header, write_record, write_summary
@@ -43,6 +50,52 @@ from utils.records import write_record_header, write_record, write_summary
 # models.exp12_patch_quality_modulation.update_text_features_with_quality)
 # ------------------------------------------------------------------
 
+def _compute_write_mask(
+    w: torch.Tensor,
+    rule: str = "thresh",
+    thresh: float = 0.1,
+    r: float = 0.5,
+    p: float = 0.5,
+) -> torch.Tensor:
+    """Select which classes get written, given class probabilities ``w`` [C].
+
+    rule:
+      top1   — only the argmax class (hard top-1 write).
+      thresh — ``w >= thresh`` (legacy behavior; the fixed 0.1 floor is
+               class-count-sensitive: softmax mass per class shrinks as the
+               number of classes grows).
+      ratio  — ``w >= r * w.max()`` (fraction of the top-1 probability; in
+               temperature-scaled units this is a logit-gap criterion that
+               does not depend on C).
+      cpm    — write the smallest top-k whose cumulative probability mass
+               reaches ``p`` (a credible-mass percentile; adaptive rank
+               depth, class-count-independent).
+
+    Returns a bool mask [C] selecting classes to write.
+    """
+    if rule == "top1":
+        mask = torch.zeros_like(w, dtype=torch.bool)
+        mask[w.argmax(dim=-1)] = True
+        return mask
+    if rule == "thresh":
+        return w >= thresh
+    if rule == "ratio":
+        return w >= r * w.max()
+    if rule == "cpm":
+        # CPU: torch.cumsum has no deterministic CUDA kernel (runner.py sets
+        # torch.use_deterministic_algorithms(True)). C is tiny (<= a few
+        # hundred classes) so the offload is negligible.
+        w_cpu = w.detach().float().cpu()
+        order = torch.argsort(w_cpu, descending=True)
+        cum = torch.cumsum(w_cpu[order], dim=0)
+        # Smallest k with cumulative mass >= p (cum[-1] == 1.0 for softmax).
+        k = int((cum >= p).nonzero()[0].item()) + 1
+        mask = torch.zeros_like(w, dtype=torch.bool)
+        mask[order[:k].to(w.device)] = True
+        return mask
+    raise ValueError(f"Unknown write_rule: {rule}")
+
+
 def _update_text_features_with_quality(
     image_feature: torch.Tensor,
     probs: torch.Tensor,
@@ -52,6 +105,7 @@ def _update_text_features_with_quality(
     T: float = 20.0,
     quality_gate: torch.Tensor = None,
     quality_modulation: float = 0.0,
+    write_mask: torch.Tensor = None,
 ):
     """
     Quality-gated EMA prototype update.
@@ -71,6 +125,8 @@ def _update_text_features_with_quality(
         T:                Temperature controlling update rate.
         quality_gate:     Scalar tensor [0,1] from patch-level evidence quality.
         quality_modulation: How much quality_gate amplifies the update.
+        write_mask:       Optional bool [C] selecting which classes to update.
+                          Defaults to ``w >= 0.1`` (legacy threshold rule).
 
     Returns:
         refined_text:     (C, D) L2-normalised updated text features.
@@ -80,9 +136,10 @@ def _update_text_features_with_quality(
     w = probs.squeeze(0)                          # [C] — class confidence
 
     # Compute update weights via exponential decay: w_new = 1 - exp(-w / T)
-    # Only apply to high-confidence classes (w >= 0.1)
+    # Only apply to high-confidence classes (w >= 0.1 by default; the caller
+    # may pass a write_mask for class-count-independent rules)
     w_new = torch.zeros_like(w)                   # [C]
-    mask = w >= 1e-1                              # [C] bool
+    mask = w >= 1e-1 if write_mask is None else write_mask  # [C] bool
     w_new[mask] = 1 - torch.exp(-w[mask] / T)     # [C]
 
     # Quality-gated modulation: amplify update when patch evidence is strong
@@ -178,6 +235,21 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         alpha_pta = float(_il_cfg.get("alpha", self.cfg.get("alpha", 0.01)))
         T         = float(_il_cfg.get("T",     self.cfg.get("T",     20.0)))
 
+        # Write-rule knobs (class-count-independent candidates):
+        #   write_rule   top1 | thresh (legacy, w>=0.1) | ratio (r*w_max)
+        #                | cpm (cumulative-mass percentile p)
+        #   write_source clip (frozen zero-shot CLIP logits; default) |
+        #                pta (clip + tau_image*image_proto) | image
+        # Deriving the mask from the fully fused logits is state-coupled and
+        # collapses the bank via positive feedback (outputs/full_dtd_eval.md);
+        # the pta/image sources stay causal by reading the prototype bank
+        # from the state that precedes this sample's write.
+        write_rule   = str(self.cfg.get("write_rule", "thresh"))
+        write_thresh = float(self.cfg.get("write_thresh", 0.1))
+        ratio_r      = float(self.cfg.get("ratio_r", 0.5))
+        cpm_p        = float(self.cfg.get("cpm_p", 0.5))
+        write_source = str(self.cfg.get("write_source", "clip"))
+
         os.makedirs("outputs", exist_ok=True)
 
         text_proto = _safe_normalize(text_embeddings.t().float())  # [C, D]
@@ -245,18 +317,58 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     self.patch_level.compute_patch_logits(images, encoder, states)
                 )
 
-                # 3) Update image-level prototype (WITH quality modulation)
-                soft_logits = F.softmax(clip_logits, dim=-1)
+                # 3) Update image-level prototype (WITH quality modulation).
+                #    For write_source=pta/image, update ALL classes first, then
+                #    compute post-update mask, then revert non-selected classes.
+                # Save pre-update state for reverting non-selected classes
+                refine_feature_pre = refine_feature.clone()
+                target_prototype_pre = target_prototype.clone()
+
+                # 1. Update ALL classes first (using clip probs as initial weights)
+                soft_logits_pre = F.softmax(clip_logits, dim=-1)
+                all_mask = torch.ones(C, dtype=torch.bool, device=device)
                 refine_feature, target_prototype = _update_text_features_with_quality(
                     image_features,
-                    soft_logits.half(),
+                    soft_logits_pre.half(),
                     refine_feature,
                     target_prototype,
                     alpha=alpha_pta,
                     T=T,
                     quality_gate=quality_gate,
                     quality_modulation=self.quality_modulation,
+                    write_mask=all_mask,
                 )
+
+                # 2. Compute post-update mask (now uses the updated prototype)
+                if write_source == "clip":
+                    mask_logits = clip_logits
+                else:
+                    image_proto_post = (
+                        image_features.half() @ refine_feature.half().T
+                    )  # [1, C]
+                    if write_source == "pta":
+                        mask_logits = (
+                            clip_logits
+                            + self.fusion.tau_image_proto * image_proto_post
+                        )
+                    elif write_source == "image":
+                        mask_logits = image_proto_post
+                    else:
+                        raise ValueError(f"Unknown write_source: {write_source}")
+                soft_logits = F.softmax(mask_logits, dim=-1)
+                write_mask = _compute_write_mask(
+                    soft_logits.squeeze(0),
+                    rule=write_rule,
+                    thresh=write_thresh,
+                    r=ratio_r,
+                    p=cpm_p,
+                )
+
+                # 3. Revert non-selected classes back to pre-update state
+                for c in range(C):
+                    if not write_mask[c]:
+                        refine_feature[c] = refine_feature_pre[c]
+                        target_prototype[c] = target_prototype_pre[c]
 
                 # 4) Image-level proto logits
                 image_proto_logits = (
