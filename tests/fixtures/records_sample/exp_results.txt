@@ -1,0 +1,8 @@
+Method                                        dtd
+------------------------------------------------
+PatchModPTA-CS-dtd-s1                        70.00
+PTA-CS-dtd-s1                                50.00
+ZeroShot-CS-dtd-s1                           50.00
+PatchModPTA-CS-QualityGated-dtd-s1           70.00
+PatchModPTA-CS-MajorityVote-dtd-s1           70.00
+PatchModPTA-CS-AgreementGate-dtd-s1          70.00
