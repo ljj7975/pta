@@ -25,6 +25,7 @@ A **tie** occurs when `clip.argmax != image_proto.argmax` — the CLIP zero-shot
 
 | Patch agrees with | Count | % of Ties | Source is correct | % correct | Δ vs baseline |
 |-----------------|-------|-----------|-------------------|-----------|---------------|
+| **GT (correct)** | **87** | **16.5%** | **87/87** | **100%** | — |
 | image_proto | 109 | 20.7% | 37/109 | 33.9% | +9.3% |
 | clip | 107 | 20.3% | 32/107 | 29.9% | +13.2% |
 | other (independent) | 311 | 59.0% | 18/311 | 5.8% | — |
@@ -33,13 +34,15 @@ A **tie** occurs when `clip.argmax != image_proto.argmax` — the CLIP zero-shot
 
 ### Interpretation
 
-1. **Patch is independent 59.0% of ties** — predicting something completely different from all sources. This provides diversity for 2-of-3 voting.
+1. **Patch predicts GT 16.5% of ties** — directly correct, could fix wrong predictions.
 
-2. **Patch agreement is a quality signal**:
+2. **Patch is independent 59.0% of ties** — predicting something completely different from all sources. This provides diversity for 2-of-3 voting.
+
+3. **Patch agreement is a quality signal**:
    - When patch agrees with CLIP → CLIP is correct **29.9%** of the time (+13.2% over CLIP baseline)
    - When patch agrees with image_proto → proto is correct **33.9%** of the time (+9.3% over proto baseline)
 
-3. **Patch agreement boosts both sources** — but the improvement is larger for CLIP (+13.2%) than for image_proto (+9.3%).
+4. **Patch agreement boosts both sources** — but the improvement is larger for CLIP (+13.2%) than for image_proto (+9.3%).
 
 ---
 
@@ -78,6 +81,7 @@ ProtoAlphaFusion always contributes patch (scaled by `proto_alpha`):
 |----------|--------|
 | How often is tie-breaking needed? | 31.1% of samples |
 | When ties occur, how often is PTA wrong? | 75.3% of ties |
+| How often does patch predict GT? | 16.5% of ties |
 | How often is patch independent? | 59.0% of ties |
 | When patch agrees with CLIP, is CLIP correct? | 29.9% (+13.2% vs baseline) |
 | When patch agrees with image_proto, is proto correct? | 33.9% (+9.3% vs baseline) |
