@@ -1,48 +1,62 @@
 # Experiment Results: PTA Limitations and Patch-Level Prototype Potential
 
-Generated from `scripts/run_experiments.sh` — 5 methods × 4 datasets × 5 seeds = 100 runs.
+Generated from `scripts/run_experiments.sh` — 5 methods × 5 datasets × 5 seeds = 125 runs.
 
-**Note:** food101 experiments for PatchModPTA variants failed due to missing `configs/patch_modulated_pta/food101.yaml`. Only PTA ran on food101 (86.34% ± 0.02).
+**Datasets**: dtd, eurosat, fgvc, oxford_flowers, oxford_pets (original dev set)
 
 ---
 
-## 1. Overall Accuracy (4 datasets, 5 seeds)
+## 1. Overall Accuracy (5 datasets, 5 seeds)
 
-| Method | caltech101 | dtd | eurosat | fgvc | **Mean** |
+| Method | dtd | eurosat | fgvc | oxford_flowers | oxford_pets | **Mean** |
 
-|--------|-----------|-----|---------|------|----------|
+|--------|-----|---------|------|----------------|-------------|----------|
 
-| PTA | 94.75 | 47.43 | 61.34 | 25.65 | **57.29** |
-| PatchModPTA | 94.63 | 47.35 | 62.38 | 22.90 | **56.82** |
-| PatchModPTA-QGated | 94.63 | 47.34 | 62.39 | 22.93 | **56.82** |
-| PatchModPTA-MVote | 94.60 | 48.09 | 61.93 | 25.61 | **57.56** |
-| PatchModPTA-AGate | 94.78 | 48.04 | 61.21 | 25.55 | **57.40** |
+| PTA | 47.43 | 61.34 | 25.65 | 74.53 | 91.15 | **60.02** |
+| PatchModPTA | 47.35 | 62.38 | 22.90 | 72.24 | 89.14 | **58.80** |
+| PatchModPTA-QGated | 47.34 | 62.39 | 22.93 | 72.29 | 89.15 | **58.82** |
+| PatchModPTA-MVote | 48.09 | 61.93 | 25.61 | 74.40 | 90.76 | **60.16** |
+| PatchModPTA-AGate | 48.04 | 61.21 | 25.55 | 74.28 | 90.85 | **59.99** |
 
 ### Key Takeaway
 
-- **PTA baseline: 57.29%** mean across 4 datasets.
+- **PTA baseline: 60.02%** mean across 5 datasets.
 
-- **PatchModPTA (ProtoAlpha) and QGated: 56.82%** — slightly below PTA.
+- **PatchModPTA (ProtoAlpha): 58.80%** — below PTA (−1.22%).
 
-- **PatchModPTA-MVote: 57.56%** — best overall (+0.27% over PTA).
+- **PatchModPTA-QGated: 58.82%** — below PTA (−1.20%).
 
-- **PatchModPTA-AGate: 57.40%** — close to MVote (+0.11% over PTA).
+- **PatchModPTA-MVote: 60.16%** — best overall (+0.14% over PTA).
+
+- **PatchModPTA-AGate: 59.99%** — close to PTA (−0.04%).
 
 ---
 
-## 2. Fusion Mechanisms — How Each Method Weights the Patch Term
+## 2. Delta vs PTA by Dataset
 
-All five methods fuse three logit sources: `clip_logits`, `image_proto_logits`, `patch_proto_logits`.
+| Dataset | ProtoAlpha | QGated | MVote | AGate |
 
-The fused logits are computed as:
+|---------|------------|--------|-------|-------|
 
-```
+| dtd | -0.08% | -0.09% | +0.65% | +0.60% |
+| eurosat | +1.04% | +1.04% | +0.59% | -0.13% |
+| fgvc | -2.75% | -2.72% | -0.04% | -0.10% |
+| oxford_flowers | -2.29% | -2.24% | -0.13% | -0.24% |
+| oxford_pets | -2.01% | -2.00% | -0.39% | -0.31% |
+| **AVG** | **-1.22%** | **-1.20%** | **+0.14%** | **-0.04%** |
 
-result = tau_text * clip_logits + tau_image_proto * image_proto_logits + PATCH_TERM
+### Per-Seed Variance
 
-```
+| Method | dtd σ | eurosat σ | fgvc σ | flowers σ | pets σ |
 
-The methods differ in how `PATCH_TERM` is computed:
+|--------|-------|-----------|--------|-----------|--------|
+
+| PTA | 0.27 | 0.17 | 0.26 | 0.20 | 0.11 |
+| PatchModPTA | 0.39 | 0.28 | 0.37 | 0.16 | 0.32 |
+| PatchModPTA-MVote | 0.19 | 0.21 | 0.23 | 0.14 | 0.27 |
+---
+
+## 3. Fusion Mechanisms — How Each Method Weights the Patch Term
 
 | Method | PATCH_TERM Formula | Behavior |
 
@@ -65,7 +79,7 @@ MVote and AGate are **discrete gating** — they can **silence** bad patch predi
 
 ---
 
-## 3. ProtoAlphaFusion Collapse on FGVC
+## 4. ProtoAlphaFusion Collapse on FGVC
 
 | Method | FGVC Accuracy | vs PTA |
 
@@ -92,7 +106,34 @@ MVote and AGate are **discrete gating** — they can **silence** bad patch predi
 
 ---
 
-## 4. Tie-Breaking Analysis (dtd, seed 1)
+## 5. ProtoAlphaFusion Collapse on Flowers and Pets
+
+| Method | Flowers | vs PTA | Pets | vs PTA |
+
+|--------|---------|--------|------|--------|
+
+| PTA | 74.53% | — | 91.15% | — |
+
+| PatchModPTA (ProtoAlpha) | 72.24% | **−2.29%** | 89.14% | **−2.01%** |
+
+| PatchModPTA-QGated | 72.29% | **−2.24%** | 89.15% | **−2.00%** |
+
+| PatchModPTA-MVote | 74.40% | −0.13% | 90.76% | −0.39% |
+
+| PatchModPTA-AGate | 74.28% | −0.24% | 90.85% | −0.31% |
+
+
+### Interpretation
+
+- ProtoAlpha/QGated collapse on **all fine-grained datasets** (FGVC −2.75%, Flowers −2.29%, Pets −2.01%).
+
+- MVote/AGate prevent collapse across all datasets.
+
+- This confirms the pattern: always-on patch fusion is harmful on fine-grained tasks.
+
+---
+
+## 6. Tie-Breaking Analysis (dtd, seed 1)
 
 A **tie** occurs when `clip.argmax != image_proto.argmax` — CLIP and the image-level prototype disagree.
 
@@ -112,68 +153,70 @@ A **tie** occurs when `clip.argmax != image_proto.argmax` — CLIP and the image
 ### Breakdown of Patch Predictions on Ties
 
 | Patch agrees with | Count | % of Ties | Source is correct | % correct | Δ vs baseline |
+
 |-----------------|-------|-----------|-------------------|-----------|---------------|
+
+| **GT (correct)** | **87** | **16.5%** | **87/87** | **100%** | — |
+
 | image_proto | 109 | 20.7% | 37/109 | 33.9% | +9.3% |
+
 | clip | 107 | 20.3% | 32/107 | 29.9% | +13.2% |
+
 | other (independent) | 311 | 59.0% | 18/311 | 5.8% | — |
 
+
 **Baseline accuracy on ties:** CLIP = 16.7%, image_proto = 24.7%.
+
 
 ### Interpretation
 
 - **75.3% of ties are wrong** — when CLIP and image_proto disagree, the image_proto prediction is wrong 75.3% of the time. This is the **prototype drift** problem.
 
-- Patch agreement is a **quality signal** for both sources:
-  - When patch agrees with CLIP → CLIP is correct 29.9% of the time (+13.2% over CLIP baseline).
-  - When patch agrees with image_proto → proto is correct 33.9% of the time (+9.3% over proto baseline).
+- Patch predicts GT **16.5%** of ties — directly correct, could fix wrong predictions.
 
-- Patch is **independent** 59.0% of ties — predicting something completely different from all sources. This provides diversity for 2-of-3 voting.
+- Patch is **independent 59.0%** of ties — provides diversity for 2-of-3 voting.
 
-- This suggests **voting can leverage patch** to break ties: patch agreement boosts confidence in a source, while patch independence provides a third vote that can tip the balance.
+- Patch agreement is a **quality signal** — boosts CLIP accuracy by +13.2%, proto by +9.3%.
 
 ---
 
-## 5. Dataset-Specific Gains (MVote vs PTA)
+## 7. Dataset Characteristics and Results Pattern
 
-| Dataset | PTA | MVote | Diff | Characteristic |
+| Dataset | Classes | Characteristic | PTA | MVote | Δ | ProtoAlpha Δ |
 
-|---------|-----|-------|------|----------------|
+|---------|---------|----------------|-----|-------|---|--------------|
 
-| caltech101 | 94.75% | 94.60% | -0.15% | saturated (easy) |
-| dtd | 47.43% | 48.09% | +0.65% | texture |
-| eurosat | 61.34% | 61.93% | +0.59% | satellite imagery |
-| fgvc | 25.65% | 25.61% | -0.04% | fine-grained aircraft |
+| dtd | 47 | texture | 47.43% | 48.09% | +0.65% | −0.08% |
 
-### Interpretation
+| eurosat | 10 | satellite | 61.34% | 61.93% | +0.59% | +1.04% |
 
-- **Gains on texture/satellite datasets** (dtd +0.65%, eurosat +0.59%) — these benefit from local spatial patterns.
+| fgvc | 50 | fine-grained aircraft | 25.65% | 25.61% | −0.04% | −2.75% |
 
-- **No gain on saturated datasets** (caltech101 −0.15%) — already near-ceiling.
+| oxford_flowers | 102 | fine-grained flowers | 74.53% | 74.40% | −0.13% | −2.29% |
 
-- **No collapse on FGVC** (−0.04%) — MVote prevents the −2.75% collapse seen with ProtoAlpha.
+| oxford_pets | 37 | fine-grained pets | 91.15% | 90.76% | −0.39% | −2.01% |
+
+
+### Pattern
+
+- **Gains on texture/satellite** (dtd +0.65%, eurosat +0.59%) — local spatial patterns matter.
+
+- **Collapse on fine-grained** (FGVC −2.75%, Flowers −2.29%, Pets −2.01%) — always-on patch fusion hurts.
+
+- **MVote prevents collapse** across all datasets (−0.04% to −0.39%).
 
 ---
 
-## 6. Per-Class Accuracy (PTA vs MVote on dtd)
-
-Classes with >5% difference:
-
-| Class | PTA | MVote | Diff |
-
-|-------|-----|-------|------|
-
-| 39 | 48.89% | 60.00% | +11.11% |
-| 46 | 31.67% | 18.89% | -12.78% |
----
-
-## 7. Key Insights for the Paper
+## 8. Key Insights for the Paper
 
 1. **PTA's image-level prototype updates can hurt performance** when they disagree with CLIP (75.3% of ties are wrong). This is the **prototype drift** problem.
 
-2. **ProtoAlphaFusion collapses on FGVC (−2.75%)** because it over-relies on image-level prototypes that drift. This demonstrates PTA's limitation on fine-grained datasets.
+2. **ProtoAlphaFusion collapses on all fine-grained datasets** (FGVC −2.75%, Flowers −2.29%, Pets −2.01%) because it over-relies on image-level prototypes that drift.
 
-3. **Patch-level prototypes provide an orthogonal signal** (55.6% of ties predict something different from all sources) that can break ties and prevent collapse.
+3. **Patch-level prototypes provide an orthogonal signal** (59.0% of ties predict something different from all sources) that can break ties and prevent collapse.
 
 4. **Voting mechanisms (MVote, AGate) leverage patch signals** to maintain PTA-level performance without collapse, demonstrating the value of patch-level prototypes.
 
 5. **Always-on patch fusion (ProtoAlpha/QGated) is harmful** on fine-grained datasets. Discrete gating (MVote/AGate) is needed to silence noisy patch predictions.
+
+6. **Patch agreement is a quality signal** — when patch agrees with CLIP, CLIP accuracy jumps +13.2% (29.9% vs 16.7% baseline).
