@@ -107,7 +107,7 @@ METHODS=(
     "PatchModPTA-AGate|patch_modulated_pta|configs/patch_modulated_pta|fusion.type=AgreementGateFusion"
 )
 
-DATASETS=(caltech101 dtd eurosat fgvc food101)
+DATASETS=(dtd eurosat fgvc oxford_flowers oxford_pets)
 SEEDS=(1 2 3 4 5)
 
 # ── Count total and filtered ─────────────────────────────────────────────
