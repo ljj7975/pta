@@ -318,7 +318,19 @@ class GaussianPatchLevel(BasePatchLevel):
             )
 
     def update_state(self, state, images, encoder, global_feat,
-                     *, filter_scores=None, target_class_idx=None):
+                     *, filter_scores=None, target_class_idx=None,
+                     trust_weight=1.0):
+        # trust_weight in [0, ~1]: replaces the flat "+1.0" occurrence weight
+        # every write used to get regardless of whether it's likely correct.
+        # Default 1.0 = old behavior (no-op, exact sanity check). Computed by
+        # the caller (models/patch_modulated_pta.py) from the CLS-vote-vs-
+        # patch-vote corroboration signal -- see outputs/patch_fix_experiments_plan.md
+        # (Experiment K): high when the independent patch-vote agrees this
+        # image belongs to target_class_idx (scaled by how confidently it
+        # agrees), low (a fixed discount) when it disagrees. Applied to both
+        # the appearance-count increment and the variance-EMA step size, so a
+        # low-trust write nudges a cluster's shape less too, not just its
+        # weight in scoring/pruning.
         # ── Config ────────────────────────────────────────────────────────────
         match_threshold = float(self._cfg.get("match_threshold", 0.60))
         max_K = int(self._cfg.get("max_K", 100))
@@ -326,6 +338,12 @@ class GaussianPatchLevel(BasePatchLevel):
         gaussian_ema = float(self._cfg.get("gaussian_ema", 0.1))
         variance_min = float(self._cfg.get("variance_min", 0.001))
         variance_max = float(self._cfg.get("variance_max", 1.0))
+        # Decay applied to *existing* appearance weight before adding this
+        # step's occurrence (default 1.0 = old behavior, a permanent running
+        # count). <1.0 lets recent evidence outweigh old evidence, the same
+        # property baseline PTA's EMA update already has -- see
+        # outputs/patch_fix_experiments_plan.md (Experiment E).
+        appearance_decay = float(self._cfg.get("appearance_decay", 1.0))
 
         aug_copies = int(self._cfg.get("aug_copies", 0))
 
@@ -412,11 +430,14 @@ class GaussianPatchLevel(BasePatchLevel):
                 if mask.any():
                     residuals = patches_norm[mask] - centers_old_norm[k]
                     batch_var = residuals.pow(2).mean(dim=0).clamp(variance_min, variance_max)
-                    updated_var = (1 - gaussian_ema) * variances[k] + gaussian_ema * batch_var
+                    # A low-trust write (see trust_weight docstring below)
+                    # nudges variance less too, not just appearance.
+                    eff_ema = max(0.0, min(1.0, gaussian_ema * trust_weight))
+                    updated_var = (1 - eff_ema) * variances[k] + eff_ema * batch_var
                     all_vars.append(updated_var.clamp(variance_min, variance_max))
                 else:
                     all_vars.append(variances[k])
-                all_apps.append(apps[k] + (1.0 if appeared[k] else 0.0))
+                all_apps.append(apps[k] * appearance_decay + (trust_weight if appeared[k] else 0.0))
         else:
             # Seed prototype (index 0 in updated_centers from init)
             mask = matched & (best_clusters == 0)
@@ -429,7 +450,7 @@ class GaussianPatchLevel(BasePatchLevel):
                     device=updated_centers.device,
                 )
             all_vars.append(seed_var)
-            all_apps.append(1.0)
+            all_apps.append(trust_weight)
 
         if n_new > 0:
             for idx, group_idx in enumerate(new_groups):
@@ -445,7 +466,7 @@ class GaussianPatchLevel(BasePatchLevel):
                     residuals = group_patches - group_center
                     group_var = residuals.pow(2).mean(dim=0).clamp(variance_min, variance_max)
                 all_vars.append(group_var)
-                all_apps.append(1.0)
+                all_apps.append(trust_weight)
 
         updated_vars = torch.stack(all_vars, dim=0)
         updated_apps = torch.tensor(all_apps, device=apps.device, dtype=torch.float)

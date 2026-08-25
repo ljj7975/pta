@@ -1,0 +1,44 @@
+{
+  "dtd": {
+    "total_images": 6768,
+    "total_writes": 4036,
+    "writes_per_image": 0.5963356973995272,
+    "multi_write_rate": 2.6595744680851063,
+    "zero_write_rate": 43.026004728132385,
+    "overall_purity": 62.636273538156594,
+    "primary_writes": 3856,
+    "primary_purity": 63.38174273858921,
+    "collateral_writes": 180,
+    "collateral_purity": 46.666666666666664,
+    "n_classes_written": 39,
+    "median_class_purity": 62.5
+  },
+  "oxford_flowers": {
+    "total_images": 9852,
+    "total_writes": 9572,
+    "writes_per_image": 0.9715793747462445,
+    "multi_write_rate": 7.673568818514007,
+    "zero_write_rate": 10.515631343889565,
+    "overall_purity": 74.13288758880067,
+    "primary_writes": 8816,
+    "primary_purity": 77.22323049001815,
+    "collateral_writes": 756,
+    "collateral_purity": 38.095238095238095,
+    "n_classes_written": 93,
+    "median_class_purity": 83.33333333333333
+  },
+  "oxford_pets": {
+    "total_images": 14676,
+    "total_writes": 15832,
+    "writes_per_image": 1.0787680566911966,
+    "multi_write_rate": 8.912510220768603,
+    "zero_write_rate": 1.171981466339602,
+    "overall_purity": 85.67458312278929,
+    "primary_writes": 14504,
+    "primary_purity": 89.85107556536128,
+    "collateral_writes": 1328,
+    "collateral_purity": 40.06024096385542,
+    "n_classes_written": 37,
+    "median_class_purity": 90.9090909090909
+  }
+}

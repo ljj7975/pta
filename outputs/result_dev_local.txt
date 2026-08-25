@@ -1,0 +1,10 @@
+PTA-CS-s1's performance on dtd: Top1- 47.64.
+PTA-CS-s1's performance on eurosat: Top1- 61.28.
+PTA-CS-s1's performance on fgvc: Top1- 25.47.
+ratio-pta-mv-s1's performance on dtd: Top1- 49.29.
+PTA-CS-s1's performance on oxford_flowers: Top1- 74.46.
+ratio-pta-mv-s1's performance on eurosat: Top1- 50.46.
+PTA-CS-s1's performance on oxford_pets: Top1- 91.01.
+ratio-pta-mv-s1's performance on oxford_flowers: Top1- 74.10.
+ratio-pta-mv-s1's performance on oxford_pets: Top1- 90.76.
+ratio-pta-mv-s1's performance on fgvc: Top1- 25.89.

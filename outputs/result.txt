@@ -1,0 +1,3 @@
+PTA's performance on dtd: Top1- 47.64.
+smoke's performance on dtd: Top1- 46.75.
+smoke's performance on dtd: Top1- 46.75.

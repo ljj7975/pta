@@ -26,6 +26,7 @@ from models.base import BaseAdapter
 from models.image_level import create as create_image_level
 from models.patch_level import create as create_patch_level
 from utils.clip_inference import _safe_normalize
+from utils.patch_vote import compute_patch_vote
 from models.fusion import (
     AgreementGateFusion,
     MajorityVoteFusion,
@@ -250,6 +251,20 @@ class PatchModulatedPTAAdapter(BaseAdapter):
         cpm_p        = float(self.cfg.get("cpm_p", 0.5))
         write_source = str(self.cfg.get("write_source", "clip"))
 
+        # Experiment K (outputs/patch_fix_experiments_plan.md): soft
+        # down-weight bank writes by a bank-free, stateless "patch vote" --
+        # dot every patch embedding against the text class embeddings from
+        # the SAME single CLIP Surgery forward pass already used for the
+        # patch-level branch (no augmentation, no second model), pool it,
+        # and check whether it agrees with the class actually being
+        # written. Disabled by default (exact no-op / free sanity check
+        # against known accuracies).
+        _pv_cfg          = self.cfg.get("patch_vote_gate", {})
+        pv_enabled       = bool(_pv_cfg.get("enabled", False))
+        pv_aggregation   = str(_pv_cfg.get("aggregation", "topk20"))
+        pv_disagree_disc = float(_pv_cfg.get("disagree_discount", 1.0))
+        pv_exclude_pos   = bool(_pl_cfg.get("exclude_pos", False))
+
         os.makedirs("outputs", exist_ok=True)
 
         text_proto = _safe_normalize(text_embeddings.t().float())  # [C, D]
@@ -316,6 +331,18 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 patch_proto_logits, quality_gate = (
                     self.patch_level.compute_patch_logits(images, encoder, states)
                 )
+
+                # 2b) Experiment K corroboration vote (no-op unless
+                #     patch_vote_gate.enabled=true). One extra
+                #     get_patch_embeddings() call on the SAME original
+                #     image -- still one model, no augmentation.
+                patch_vote_pred = patch_vote_margin = None
+                if pv_enabled:
+                    pv_patch_embs = encoder.get_patch_embeddings(images, exclude_pos=pv_exclude_pos)
+                    pv_patches_norm = _safe_normalize(pv_patch_embs.float())
+                    patch_vote_pred, patch_vote_margin = compute_patch_vote(
+                        pv_patches_norm, text_embeddings, aggregation=pv_aggregation,
+                    )
 
                 # 3) Update image-level prototype (WITH quality modulation).
                 #    For write_source=pta/image, update ALL classes first, then
@@ -433,13 +460,30 @@ class PatchModulatedPTAAdapter(BaseAdapter):
 
                 pred_conf = F.softmax(gate_logits, dim=-1).squeeze(0)
 
+                def _trust_weight(cls: int) -> float:
+                    # disagree_discount is a floor, not a flat "disagree
+                    # value" competing with margin: agreeing writes are
+                    # scaled from that floor up to 1.0 by how confidently
+                    # the patch-vote agrees (interpolate(floor, 1.0, margin)),
+                    # disagreeing writes sit flat at the floor. This keeps
+                    # agree >= disagree always, and disagree_discount=1.0
+                    # collapses both branches to 1.0 -- an exact no-op
+                    # (unlike a bare "trust_weight = margin if agree else
+                    # discount", which would let a confident disagreement
+                    # outweigh a low-margin agreement at discount=1.0).
+                    if not pv_enabled:
+                        return 1.0
+                    if cls == patch_vote_pred:
+                        return pv_disagree_disc + (1.0 - pv_disagree_disc) * patch_vote_margin
+                    return pv_disagree_disc
+
                 if multi_gate:
                     above_thresh = (pred_conf > conf_thresh).nonzero(as_tuple=True)[0]
                     for cls_idx in above_thresh:
                         cls = int(cls_idx.item())
                         states[cls] = self.patch_level.update_state(
                             states[cls], images, encoder, feat_norm,
-                            target_class_idx=cls,
+                            target_class_idx=cls, trust_weight=_trust_weight(cls),
                         )
                 else:
                     top2_vals, top2_idx = pred_conf.topk(min(2, C))
@@ -451,7 +495,7 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                     if best_conf > conf_thresh and conf_margin >= conf_margin_thresh:
                         states[best_cls] = self.patch_level.update_state(
                             states[best_cls], images, encoder, feat_norm,
-                            target_class_idx=best_cls,
+                            target_class_idx=best_cls, trust_weight=_trust_weight(best_cls),
                         )
 
                 if i % 500 == 0:
@@ -489,6 +533,31 @@ class PatchModulatedPTAAdapter(BaseAdapter):
                 f"{label}'s performance on {dataset_name}: "
                 f"Top1- {final_acc:.2f}.\n"
             )
+
+        # ── Opt-in diagnostic dump of the final patch-level bank state ─────
+        # Behavior-neutral: only reads already-computed `states`; no-op when
+        # DUMP_PATCH_BANK is unset. Used by scripts/analyze_prototype_separability.py
+        # to check inter/intra-class cosine separability of the Gaussian bank
+        # centers, independent of the write-purity question.
+        dump_path = os.environ.get("DUMP_PATCH_BANK", "")
+        if dump_path:
+            os.makedirs(os.path.dirname(dump_path) or ".", exist_ok=True)
+            bank = {
+                "dataset": dataset_name,
+                "seed": seed,
+                "C": C,
+                "classes": [
+                    {
+                        "centers": states[c]["centers"].detach().cpu(),
+                        "variance": states[c]["variance"].detach().cpu(),
+                        "appearance": states[c]["appearance"].detach().cpu(),
+                        "n_images": int(states[c]["n_images"]),
+                    }
+                    for c in range(C)
+                ],
+            }
+            torch.save(bank, dump_path)
+            print(f"[DUMP_PATCH_BANK] wrote {dump_path}")
 
         return final_acc
 

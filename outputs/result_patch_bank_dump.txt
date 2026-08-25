@@ -1,0 +1,3 @@
+PatchModPTA-CS's performance on dtd: Top1- 46.75.
+PatchModPTA-CS's performance on oxford_pets: Top1- 89.48.
+PatchModPTA-CS's performance on oxford_flowers: Top1- 71.66.
