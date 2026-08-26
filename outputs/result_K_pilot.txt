@@ -1,3 +1,0 @@
-PatchModPTA-CS-K-pilot-topk20-d0.5's performance on dtd: Top1- 45.98.
-PatchModPTA-CS-K-pilot-topk20-d0.1's performance on dtd: Top1- 43.79.
-PatchModPTA-CS-K-pilot-topk20-d1.0's performance on dtd: Top1- 45.92.

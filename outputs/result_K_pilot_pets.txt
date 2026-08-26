@@ -1,6 +1,0 @@
-PatchModPTA-CS-K-pilotpets-topk20-d0.5's performance on oxford_pets: Top1- 89.53.
-PatchModPTA-CS-K-pilotpets-topk20-d0.1's performance on oxford_pets: Top1- 72.20.
-PatchModPTA-CS-K-pilotpets-topk20-d1.0's performance on oxford_pets: Top1- 89.48.
-PatchModPTA-CS-K-pilotpets-otsu_mean-d1.0's performance on oxford_pets: Top1- 89.48.
-PatchModPTA-CS-K-pilotpets-otsu_mean-d0.5's performance on oxford_pets: Top1- 89.59.
-PatchModPTA-CS-K-pilotpets-otsu_mean-d0.1's performance on oxford_pets: Top1- 71.38.

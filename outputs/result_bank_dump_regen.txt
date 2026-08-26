@@ -1,9 +1,0 @@
-PatchModPTA-CS-s3's performance on dtd: Top1- 47.22.
-PatchModPTA-CS-s2's performance on dtd: Top1- 48.23.
-PatchModPTA-CS-s4's performance on dtd: Top1- 46.63.
-PatchModPTA-CS-s2's performance on oxford_flowers: Top1- 72.39.
-PatchModPTA-CS-s2's performance on oxford_pets: Top1- 89.34.
-PatchModPTA-CS-s4's performance on oxford_flowers: Top1- 72.43.
-PatchModPTA-CS-s3's performance on oxford_flowers: Top1- 72.39.
-PatchModPTA-CS-s3's performance on oxford_pets: Top1- 88.83.
-PatchModPTA-CS-s4's performance on oxford_pets: Top1- 88.66.

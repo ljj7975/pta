@@ -1,6 +1,0 @@
-PatchModPTA-CS-K-pilotv2-topk20-d1.0's performance on dtd: Top1- 46.75.
-PatchModPTA-CS-K-pilotv2-topk20-d0.5's performance on dtd: Top1- 46.69.
-PatchModPTA-CS-K-pilotv2-topk20-d0.1's performance on dtd: Top1- 44.80.
-PatchModPTA-CS-K-pilotv2-otsu_mean-d1.0's performance on dtd: Top1- 46.75.
-PatchModPTA-CS-K-pilotv2-otsu_mean-d0.5's performance on dtd: Top1- 46.69.
-PatchModPTA-CS-K-pilotv2-otsu_mean-d0.1's performance on dtd: Top1- 44.44.

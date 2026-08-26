@@ -1,4 +1,0 @@
-PatchModPTA-CS-decay0.99's performance on dtd: Top1- 46.69.
-PatchModPTA-CS-decay1.0's performance on dtd: Top1- 46.75.
-PatchModPTA-CS-decay0.9's performance on dtd: Top1- 45.57.
-PatchModPTA-CS-decay0.95's performance on dtd: Top1- 46.63.

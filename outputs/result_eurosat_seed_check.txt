@@ -1,4 +1,0 @@
-PTA-CS-s2's performance on eurosat: Top1- 61.62.
-PTA-CS-s3's performance on eurosat: Top1- 61.30.
-ratio-pta-mv-s2's performance on eurosat: Top1- 60.06.
-ratio-pta-mv-s3's performance on eurosat: Top1- 66.15.
