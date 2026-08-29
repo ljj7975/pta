@@ -1,0 +1,23 @@
+# Write-gate PTA method defaults — inherits shared base, adds Part 4 write-gate values.
+#
+# Prediction rule is fixed across all modes (clip + 100*image_proto). Only the
+# write gate differs, selected per-run via --override write_gate=<mode>, where
+#   baseline            — always write argmax(clip)
+#   confident           — write iff softmax(clip).top1-top2 >= conf_margin_thresh
+#   agree               — write iff patch_vote_pred(topk20) == argmax(clip)
+#   confident_and_agree — write iff both confident AND agree
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+write_gate: baseline
+conf_margin_thresh: 0.2
+pv_aggregation: topk20

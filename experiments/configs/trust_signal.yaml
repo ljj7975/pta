@@ -1,0 +1,23 @@
+# Trust-Signal method config — inherits shared base.
+#
+# Tests whether CLIP-patch agreement can serve as a quality signal:
+# trust CLIP's logits directly when CLIP and patch vote agree,
+# use PTA's fused prediction (image-level prototype) when they disagree.
+
+defaults:
+  - ../../configs/base
+
+# PTA-standard image-level params (alpha, T inherited from base)
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+# Patch-level params — multi_gate with lower threshold for richer patch evidence
+patch_level:
+  conf_threshold: 0.3
+  multi_gate: true
+
+# Fusion — standard PTA weights
+fusion:
+  tau_text: 1.0
+  tau_image_proto: 100.0

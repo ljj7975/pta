@@ -14,7 +14,9 @@ import torch
 
 def topk_pool(sims, k):
     k_eff = min(k, sims.shape[0])
-    vals, _ = sims.topk(k_eff, dim=0)
+    # CPU offload: CUDA topk tie-indices are non-deterministic under the live
+    # runner's torch.use_deterministic_algorithms(True) (matches _otsu_threshold_1d).
+    vals, _ = sims.detach().cpu().topk(k_eff, dim=0)
     return vals.mean(dim=0)
 
 
@@ -101,7 +103,9 @@ def compute_patch_vote(patches_norm, text_embeddings, aggregation="topk20"):
         raise ValueError(f"Unknown patch_vote aggregation: {aggregation!r}")
 
     probs = torch.softmax(scores * MARGIN_LOGIT_SCALE, dim=-1)
-    top2 = probs.topk(min(2, probs.shape[0]))
+    # CPU offload for the same determinism reason as topk_pool (CUDA tie-index
+    # non-determinism under use_deterministic_algorithms(True)).
+    top2 = probs.detach().cpu().topk(min(2, probs.shape[0]))
     margin = float((top2.values[0] - top2.values[-1]).item())
     pred = int(scores.argmax().item())
     return pred, margin

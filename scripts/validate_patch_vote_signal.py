@@ -74,7 +74,7 @@ def load_stored_records_for_seed(dataset, seed):
     order differs per seed, so position i is a different image under each
     seed; pairing mismatched seeds silently scrambles target/prediction
     pairing down to near-chance accuracy)."""
-    path = REPO_ROOT / "outputs" / "records_patch_benefit" / f"PatchModPTA-CS-{dataset}-s{seed}" / "records.jsonl"
+    path = REPO_ROOT / "outputs" / "records" / f"PatchModPTA-CS-{dataset}-s{seed}" / "records.jsonl"
     out = {}
     with open(path) as f:
         for line in f:

@@ -74,7 +74,7 @@ def load_stored_records(dataset):
     original study's PatchModPTA-CS seed-1 run (same deterministic run these
     bank dumps came from — verified identical accuracy in the earlier smoke
     check)."""
-    path = REPO_ROOT / "outputs" / "records_patch_benefit" / f"PatchModPTA-CS-{dataset}-s1" / "records.jsonl"
+    path = REPO_ROOT / "outputs" / "records" / f"PatchModPTA-CS-{dataset}-s1" / "records.jsonl"
     out = {}
     with open(path) as f:
         for line in f:

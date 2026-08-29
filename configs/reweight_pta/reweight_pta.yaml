@@ -1,0 +1,30 @@
+# Write-reweight PTA (Part 4b) method defaults — inherits shared base.
+#
+# Prediction rule is fixed (clip + 100*image_proto). The write rule is identical
+# to base PTA — always write argmax(clip) into the image prototype via a
+# single-class EMA, never dropped. Only the write WEIGHT is re-scaled along the
+# trust axis:
+#   trusted   (confident && agree)   -> EMA weight x `boost`      (up-weight)
+#   untrusted (ambiguous || disagree)-> EMA weight x `boost_down` (down-weight)
+# With boost=boost_down=1 this is base PTA exactly (in-grid control).
+#
+# `boost` / `boost_down` are selected per-run via --override. The two-sided
+# Part 4b down-weight sweep varies both, e.g.:
+#   --override boost=2.0 boost_down=0.2
+# (The earlier up-only sweep 07 used boost_down=1 with boost in {2,5,10}.)
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+boost: 1.0
+boost_down: 1.0
+conf_margin_thresh: 0.2
+pv_aggregation: topk20
