@@ -1,0 +1,29 @@
+# Probability-weighted top-1 EMA write (see models/prob_weighted_pta.py).
+# The write always fires on the top-1 class -- the canonical single-class
+# top-1 EMA write, never gated, no confidence threshold -- but the write
+# weight is additionally scaled by w_top1 ** gamma:
+#
+#   w_new = (1.0 - exp(-w_top1 / T)) * (w_top1 ** gamma)
+#
+# gamma=0.0 makes w_top1 ** 0 = 1, so w_new is the canonical value and the
+# control is bit-identical to the established top-1-write reference
+# (dtd 46.85 / flowers 74.22 / pets 90.75). gamma > 0 downweights
+# low-confidence top-1 writes; gamma < 0 is rejected at construction.
+#
+# gamma overridden per-run via --override, e.g.:
+#   --override gamma=2.0
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+gamma: 0.0
