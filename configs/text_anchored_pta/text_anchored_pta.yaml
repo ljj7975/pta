@@ -1,0 +1,26 @@
+# Text-anchored PTA method defaults (see models/text_anchored_pta.py).
+# The top-1 EMA write anchors the written feature toward the current refined
+# text row of the predicted class:
+#
+#   blend = anchor_mix * image_feature + (1.0 - anchor_mix) * text_features[top1]
+#
+# anchor_mix=1.0 is the canonical write and must reproduce the established
+# top-1-write reference (dtd 46.85 / flowers 74.22 / pets 90.75).
+#
+# anchor_mix overridden per-run via --override, e.g.:
+#   --override anchor_mix=0.9
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+anchor_mix: 1.0
