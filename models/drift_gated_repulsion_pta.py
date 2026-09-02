@@ -26,6 +26,9 @@ gates repulsion on it:
                            gate beyond confusability)
     drift_only         -- confusable AND drift-gated, with the repulsion
                            floor skipped (isolates the drift gate)
+    bilateral_drift    -- confusable AND floor-gated, fires iff EITHER class
+                           in the confused pair (top1 OR nearest-other) is
+                           drifting above the percentile threshold
 
 A repulsion floor (relative, `repulsion_floor_percentile`) is applied in all
 non-zero-lr settings: once a pair is already among the more-separated
@@ -49,12 +52,14 @@ TRIGGER_DRIFT_CONFUSABLE = "drift_confusable"
 TRIGGER_STABLE_CONFUSABLE = "stable_confusable"
 TRIGGER_CONFUSABLE_WITH_FLOOR = "confusable_with_floor"
 TRIGGER_DRIFT_ONLY = "drift_only"
+TRIGGER_BILATERAL_DRIFT = "bilateral_drift"
 _VALID_TRIGGERS = {
     TRIGGER_CONFUSABLE,
     TRIGGER_DRIFT_CONFUSABLE,
     TRIGGER_STABLE_CONFUSABLE,
     TRIGGER_CONFUSABLE_WITH_FLOOR,
     TRIGGER_DRIFT_ONLY,
+    TRIGGER_BILATERAL_DRIFT,
 }
 
 
@@ -126,6 +131,13 @@ def _apply_repulsion_v2(
         if trigger in (TRIGGER_DRIFT_CONFUSABLE, TRIGGER_DRIFT_ONLY) and not is_drifting:
             return False, target_confusability, None, drift_velocity
         if trigger == TRIGGER_STABLE_CONFUSABLE and is_drifting:
+            return False, target_confusability, None, drift_velocity
+    elif trigger == TRIGGER_BILATERAL_DRIFT:
+        # Fires iff either class in the confused pair is drifting.
+        drift_thresh = torch.quantile(drift_ema[written], drift_percentile / 100.0)
+        is_drifting_top1 = bool((drift_ema[top1] > drift_thresh).item())
+        is_drifting_other = bool((drift_ema[other] > drift_thresh).item())
+        if not (is_drifting_top1 or is_drifting_other):
             return False, target_confusability, None, drift_velocity
     # trigger in ("confusable", "confusable_with_floor"): no drift condition -- Phase 8 behavior.
 
