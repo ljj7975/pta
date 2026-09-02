@@ -102,7 +102,7 @@ line: (1) a floor-ablation 2x2 decomposition proving the drift gate, not the flo
 recovery (drift contributes ~100% of the oxford_pets improvement at lr=0.02, floor ~0%); (2)
 text-anchored EMA, no-go (best avg +0.046pp, non-monotonic, early convergence degrades); (3)
 probability-weighted EMA, no-go (p^gamma downweighting hurts dtd most, −0.59 to −2.19pp); (4)
-bilateral-drift OR-trigger, mixed/no-go (fires 35-45% more than Phase 9's AND-condition but does
+bilateral-drift OR-trigger, mixed/no-go (fires 33-46% more than Phase 9's AND-condition but does
 not translate to accuracy gains). All 16 non-control settings no-go across all four experiments.
 Concludes the confusability-repulsion line of investigation (Phases 8-10) has been exhaustively
 explored with no promotable result and recommends closing this line entirely.
