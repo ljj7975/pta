@@ -1,0 +1,29 @@
+# Prototype confusability monitor PTA method defaults — inherits shared base.
+#
+# Write rule is identical to base PTA (PTAImageLevel.update_prototypes's
+# multi-class EMA math) except classes flagged "frozen" are excluded from the
+# write mask. A class is frozen (permanently, for the rest of the run) once
+# its current nearest-other-class prototype similarity exceeds the
+# `freeze_percentile`-th percentile of all classes' CURRENT confusability.
+#
+# `freeze_percentile=100` is the control: threshold == current max, and a
+# strict `>` comparison means nothing can ever exceed it, so nothing freezes
+# and this is base PTA exactly (in-grid control).
+#
+# `freeze_percentile` is selected per-run via --override, e.g.:
+#   --override freeze_percentile=80
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+freeze_percentile: 100.0
