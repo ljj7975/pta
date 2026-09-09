@@ -1,0 +1,33 @@
+# Drift-gated prototype-repulsion PTA method defaults (see
+# models/drift_gated_repulsion_pta.py). Follow-up to Phase 8
+# (models/repulsive_pta.py): repulsion additionally requires the target
+# class's own prototype to be actively drifting (drift_confusable), not just
+# statically confusable, distinguishing drift-driven closeness from
+# genuinely-similar classes. A relative repulsion floor
+# (repulsion_floor_percentile) stops re-firing on an already-separated pair.
+#
+# repulsion_lr=0.0 is a hard no-op (control) and must reproduce the
+# established top-1-write reference (dtd 46.85 / flowers 74.22 / pets 90.75).
+#
+# repulsion_lr / trigger overridden per-run via --override, e.g.:
+#   --override repulsion_lr=0.05 trigger=drift_confusable
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+repulsion_lr: 0.0
+trigger: drift_confusable
+confusability_percentile: 66.0
+drift_percentile: 50.0
+drift_decay: 0.7
+repulsion_floor_percentile: 20.0
