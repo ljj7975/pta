@@ -1,0 +1,30 @@
+# Trust-adaptive read-time fusion PTA method defaults — inherits shared base.
+#
+# Write rule is byte-identical to base PTA (PTAImageLevel.update_prototypes,
+# unmodified multi-class EMA). Only the fusion READ weight on image_proto is
+# scaled per-sample by the confidence x patch-agreement trust signal:
+#   trusted   (confident && agree)   -> tau_image_proto x `tau_scale_trusted`
+#   untrusted (ambiguous || disagree)-> tau_image_proto x `tau_scale_untrusted`
+# With tau_scale_trusted=tau_scale_untrusted=1.0 this is base PTA exactly
+# (in-grid control).
+#
+# `tau_scale_trusted` / `tau_scale_untrusted` are selected per-run via
+# --override, e.g.:
+#   --override tau_scale_trusted=0.5 tau_scale_untrusted=1.5
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: TrustAdaptiveFusion
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+  tau_scale_trusted: 1.0
+  tau_scale_untrusted: 1.0
+
+conf_margin_thresh: 0.2
+pv_aggregation: topk20

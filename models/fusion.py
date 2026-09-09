@@ -8,6 +8,8 @@ Provides:
     - QualityGatedFusion      Adds quality_gate on top of proto_alpha.
     - MajorityVoteFusion      2-of-3 majority vote over source argmaxes.
     - AgreementGateFusion     Mutes patch term on CLIP disagreement.
+    - TrustAdaptiveFusion     Scales tau_image_proto per-sample by a
+                              confidence x patch-agreement trust signal.
 """
 
 from abc import ABC, abstractmethod
@@ -252,4 +254,52 @@ class AgreementGateFusion(WeightedFusion):
             result += (
                 self.tau_patch_proto * gate * self._squash_patch(patch_proto_logits)
             )
+        return result
+
+
+class TrustAdaptiveFusion(WeightedFusion):
+    """Scale ``tau_image_proto`` per-sample by a causal confidence x
+    patch-agreement trust signal, instead of changing what gets written
+    into the image prototype (Part 4a/4b already showed that write-side
+    levers on this signal don't help — see
+    ``experimental_results/PatchModPTA_Purity_Separability_Trust_Analysis.md``).
+
+    The write rule is untouched; only how much the *existing* prototype is
+    trusted at prediction time changes::
+
+        trusted = (clip_margin >= conf_margin_thresh) and (patch_vote_pred == clip_top1)
+        tau_eff = tau_image_proto * (tau_scale_trusted if trusted else tau_scale_untrusted)
+        result  = tau_text * clip_logits + tau_eff * image_proto_logits
+
+    ``trusted`` is passed in via ``**kwargs`` (computed causally by the
+    adapter from frozen clip logits + a stateless patch vote, exactly as in
+    ``models/write_gate_pta.py``); this class does not compute the vote
+    itself. ``tau_scale_trusted = tau_scale_untrusted = 1.0`` reproduces
+    base PTA's ``WeightedFusion`` exactly (in-grid control).
+
+    No patch-level logit term is used here (``tau_patch_proto`` stays 0);
+    this fusion mode is orthogonal to the patch-content fusion mechanisms
+    above.
+    """
+
+    def __init__(self, cfg: dict):
+        super().__init__(cfg)
+        self.tau_scale_trusted = float(self._cfg.get("tau_scale_trusted", 1.0))
+        self.tau_scale_untrusted = float(self._cfg.get("tau_scale_untrusted", 1.0))
+
+    def forward(
+        self,
+        clip_logits: Tensor,
+        image_proto_logits: Tensor,
+        patch_proto_logits: Optional[Tensor] = None,
+        **kwargs,
+    ) -> Tensor:
+        trusted = bool(kwargs.get("trusted", False))
+        scale = self.tau_scale_trusted if trusted else self.tau_scale_untrusted
+        tau_eff = self.tau_image_proto * scale
+
+        result = self.tau_text * clip_logits.clone()
+        result += tau_eff * image_proto_logits
+        if patch_proto_logits is not None:
+            result += self.tau_patch_proto * self._squash_patch(patch_proto_logits)
         return result
