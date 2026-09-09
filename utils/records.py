@@ -161,6 +161,16 @@ def write_record(
     clip_margin: Optional[float] = None,
     boost: Optional[float] = None,
     boost_down: Optional[float] = None,
+    tau_eff: Optional[float] = None,
+    trust_regime: Optional[str] = None,
+    n_frozen: Optional[int] = None,
+    max_confusability: Optional[float] = None,
+    view_agreement: Optional[float] = None,
+    target_confusability: Optional[float] = None,
+    signal_source: Optional[str] = None,
+    repulsion_applied: Optional[bool] = None,
+    post_repulsion_confusability: Optional[float] = None,
+    drift_velocity: Optional[float] = None,
 ) -> None:
     """Append one per-sample record to ``records.jsonl``.
 
@@ -175,6 +185,38 @@ def write_record(
     are strictly backward-compatible with existing callers (PTA / PatchModPTA /
     ZeroShot). The two-sided Part 4b down-weight study also records
     ``boost_down`` (the down-weight factor config used for untrusted writes).
+    ``tau_eff`` / ``trust_regime`` are used by the read-time trust-adaptive
+    fusion study (``models/trust_fusion_pta.py``): the effective
+    ``tau_image_proto`` applied to this sample and whether it fell in the
+    "trusted" or "untrusted" regime. ``n_frozen`` / ``max_confusability`` are
+    used by the prototype-confusability study
+    (``models/confusability_gated_pta.py``): how many classes are currently
+    frozen and the current max per-class nearest-other-class similarity.
+    ``view_agreement`` is used by the multi-view consistency study
+    (``models/view_consistency_pta.py``): fraction of augmented views whose
+    top-1 prediction matched the original (unaugmented) view's top-1.
+    ``target_confusability`` / ``signal_source`` are used by the write-time
+    trust studies (``models/trust_write_gate_pta.py``,
+    ``models/trust_reweight_pta.py``): the causal
+    nearest-other-class-prototype similarity for the class about to be
+    written (evaluated on the bank state BEFORE this sample's write), and
+    which signal ("view", "confusability", or "both") the run was
+    configured to use.
+    ``repulsion_applied`` / ``post_repulsion_confusability`` are used by the
+    prototype-repulsion study (``models/repulsive_pta.py``): whether the
+    repulsive correction fired for this sample's target class, and (only
+    when it fired) the nearest-other-class similarity for that class
+    recomputed immediately after the correction -- the direct evidence for
+    whether repulsion actually reduced confusability, independent of
+    ``target_confusability`` (the pre-repulsion value, same field reused
+    from the trust studies).
+    ``drift_velocity`` is used by the drift-gated repulsion study
+    (``models/drift_gated_repulsion_pta.py``): an EMA of how much the
+    target class's prototype *direction* has changed at each of its recent
+    writes, evaluated at the moment the repulsion trigger was checked --
+    distinguishes a class whose prototype is still actively moving (drift)
+    from one that has settled but happens to sit close to another class
+    (genuine similarity).
     """
     record_dir = _record_dir()
     if not record_dir:
@@ -198,6 +240,16 @@ def write_record(
         "clip_margin": clip_margin,
         "boost": boost,
         "boost_down": boost_down,
+        "tau_eff": tau_eff,
+        "trust_regime": trust_regime,
+        "n_frozen": n_frozen,
+        "max_confusability": max_confusability,
+        "view_agreement": view_agreement,
+        "target_confusability": target_confusability,
+        "signal_source": signal_source,
+        "repulsion_applied": repulsion_applied,
+        "post_repulsion_confusability": post_repulsion_confusability,
+        "drift_velocity": drift_velocity,
     })
     with open(os.path.join(record_dir, _RECORD_FILE), "a") as f:
         _ = f.write(json.dumps(payload) + "\n")
