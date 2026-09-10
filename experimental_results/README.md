@@ -1,6 +1,6 @@
 # Experimental Results
 
-This directory consolidates the experimental findings from the PTA improvement investigation. It covers four bodies of work: (1) the patch-level fusion study, (2) the confusability/repulsion line (Phases 1–10: read-time fusion, write-time gates/reweighting, prototype repulsion), (3) the representation-upgrade study (waves 1–3), and (4) the DEC certainty-regularizer phase 1.
+This directory consolidates the experimental findings from the PTA improvement investigation. It covers three bodies of work: (1) the patch-level fusion study, (2) the confusability/repulsion line (Phases 1–10: read-time fusion, write-time gates/reweighting, prototype repulsion), and (3) the representation-upgrade study (waves 1–3).
 
 ## Documents
 
@@ -118,10 +118,6 @@ The representation-upgrade study (waves 1–3): does improving PTA's per-class p
 
 Bottom line: the prototype is the right lever (it beats CLIP on CLIP↔prototype ties), but no mechanism whose advantage depends on statistics estimated from CLIP's own biased guesses has beaten base PTA. The write-stream bias is the binding constraint.
 
-### [DEC Phase 1](./PHASE1_README.md)
-
-DEC (Dual Entropy Certainty) — a certainty regularizer that modulates PTA's prototype-EMA write weight with an entropy + logit-norm temperature. Phase 1 = implementation, configs (all 15 datasets), and docs; committed but **not yet GPU-validated**. Offline pre-validation on archived PTA streams found the committed temperature mapping runs 0.72–0.83 (near-constant, not an adaptive filter) with the direction *inverted* relative to the strongest purity signal in the study — entropy tertiles (dtd write purity: low-H 63.2% / mid 27.8% / high 16.4% vs 33.2% stream average). Recommendation for wave 4: reparameterize as an entropy-gated / entropy-weighted write rule before cluster runs.
-
 ---
 
 ## Key Takeaways — Patch-Level Fusion
@@ -141,8 +137,6 @@ DEC (Dual Entropy Certainty) — a certainty regularizer that modulates PTA's pr
 2. **Every offline gate passed, every online method failed — for distinct reasons**: variance estimation from a biased stream amplifies Mahalanobis error (Gauss); nearest-assignment cannot create K-way diversity (Bank v1); threshold-gated growth plants full-strength error modes from wrong writes (BankV2); gating removes correct updates along with wrong ones (Compact); ensembled logits are *less* accurate than the single view (Aug); damping fires on ~all writes after warm-up (Anchor).
 
 3. **The gap between a favorable offline proxy and the label-free online setting is the binding constraint** — shared by every mechanism, which all misfire on the same biased CLIP write stream.
-
-4. **Entropy is the strongest write-purity signal found** (~2× stream average purity in the low-entropy tertile on dtd), but whether it converts to a write-time lever with accuracy gains is unproven — the proposed wave-4 experiment (entropy-gated / entropy-weighted PTA) tests exactly this.
 
 ## Reproducibility
 

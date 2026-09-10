@@ -1,5 +1,0 @@
-defaults:
-  - pta
-
-patch_level:
-  match_threshold: 0.55

@@ -1,118 +1,117 @@
-# Experimental Status Summary — PTA Improvement Investigation
+# Where Things Stand — PTA Improvement Experiments
 
-**Date**: Sep 2026  
-**Purpose**: Concise reference for revisiting research direction with teammates.  
-**Scope**: ViT-B/16, CLIP Surgery, dev set = {dtd, oxford_flowers, oxford_pets}, 4 seeds.  
-**Baseline**: PTA fused = 71.07% avg (dtd 47.47 / flowers 74.55 / pets 91.18). CLIP zero-shot = 68.28%.
+**What this is**: A plain-language summary of ~6 months of experiments trying to improve PTA. Written for a direction-revisit discussion.
 
 ---
 
-## Core Finding
+## The One-Sentence Version
 
-**PTA's single-mean EMA prototype is a local optimum. Every proposed improvement makes it worse. The write-stream bias — CLIP's own predictions drive all prototype updates, with no ground truth — is the binding constraint that cannot be worked around from inside the system.**
-
----
-
-## What Was Tried (Summary)
-
-### A. Patch-Level Fusion (earliest work)
-
-**Hypothesis**: Patch-level features provide independent spatial evidence that can correct image-level prototype drift.
-
-**Result**: Null across 30+ experiments. Patch banks have negative separability margins everywhere (−0.11 to −0.24); class clusters overlap in patch space regardless of purity. Patch fusion helps slightly on the hardest dataset (dtd) but collapses on fine-grained sets (flowers, pets).
-
-**Key diagnostic**: The agreement signal (patch vote vs. CLIP CLS-guess) is genuinely strong (+9 to +35pp purity gap), but this is a *diagnostic*, not a *lever*. It has been tested in every configuration (read-time reweighting, write-gating, write-reweighting) and fails everywhere.
-
-**Status**: Closed.
+**We tried everything we could think of to improve PTA's prototype, and nothing works. The problem is structural: CLIP's own biased guesses are the only signal available at test time, and no amount of filtering or correction can overcome that.**
 
 ---
 
-### B. Confusability/Repulsion Line (Phases 1–10)
+## What PTA Does (Quick Refresher)
 
-**Hypothesis**: Trust signals can identify bad writes and either block them or correct the prototype geometry.
+PTA improves CLIP's predictions by maintaining a running "prototype" for each class. When CLIP sees a test image, it makes a guess. That guess gets blended into the class's prototype. On the next image, the prototype's opinion competes with CLIP's own.
 
-| Phase | Approach | Result |
-|-------|----------|--------|
-| 1–3 | Read-time trust fusion (120 runs) | Null. Trust regime overlaps tie regime; reweighting has nowhere to act. |
-| 1–3 | Foreground-weighted embedding | Killed offline. −40 to −44pp vs CLS on fine-grained. |
-| 1–3 | Image-level multi-prototype | Killed offline. Clustering margins near zero. |
-| 4–6 | Class-prediction calibration | Null. Peak +0.15pp, reverses on higher-class-count datasets. |
-| 4–6 | Prototype confusability freeze | Strong diagnostic (+9 to +16.5pp gap). Monotonic regression as adapter (−2.2 to −10.0pp). |
-| 4–6 | Multi-view consistency | Strongest diagnostic in campaign (+16.6 to +27.4pp). Zero improvement as adapter. |
-| 7 | Write-gate/reweight on new signals (18 settings) | All null. Diagnostic strength *inversely* related to write-time usefulness. |
-| 8 | Prototype repulsion (undirected) | Mechanism works (confusability drops). Net negative (oxford_pets −0.86 to −8.0pp). Cannot distinguish drift from genuine similarity. |
-| 9 | Drift-gated repulsion | Mildest result in campaign (lr=0.02: zero regression anywhere, +0.03 to +0.07pp avg). Below promotion bar. |
-| 10 | Floor ablation / text-anchored EMA / prob-weighted EMA / bilateral drift | All 16 settings null. Drift gate is the active ingredient (Phase 9); floor is safety net only. |
-
-**Mechanistic conclusion**: Diagnostic quality does not predict intervention usefulness. The strongest diagnostic (multi-view consistency) produces the *most destructive* write gate. Combining signals never beats the stronger individual one. Every relaxation of the intervention (permanent → per-sample, hard gate → soft reweight) narrows the loss but never flips the sign.
-
-**Status**: Exhaustively explored. Recommendation: close this line entirely.
+PTA beats CLIP by about 2–3% on average. The question was: can we do better?
 
 ---
 
-### C. Representation Upgrade Study (Waves 1–3)
+## What We Tried
 
-**Hypothesis**: Improving the per-class prototype representation (variance-aware scoring, K-prototype banks, compactness gates, augmentation ensembling, text-anchor damping) beats base PTA.
+### 1. Patch-Level Features
 
-**Pre-validation gates**: Every mechanism passed cheap offline diagnostics before any cluster compute was spent.
+**The idea**: Instead of just using the whole-image embedding (CLS token), use the 196 patch-level features to get a richer signal — like looking at individual parts of the image instead of just the overall impression.
 
-**Online results**: Every mechanism failed.
+**What happened**: Patch features from different classes look more alike than features from the same class. The separability is negative everywhere — meaning a cat's fur patches look more like a dog's fur patches than like other cat patches. No amount of fusion can fix that.
 
-| Method | Avg Δ vs PTA | Failure mode |
-|--------|-------------|--------------|
-| GaussPTA (Mahalanobis scoring) | −3.4 to −32.8pp | Variance estimated from biased stream amplifies error |
-| BankPTA (K=3, K=5) | −0.6pp | Rich-get-richer collapse (K=3 ≡ K=5) |
-| BankV2 (anti-collapse) | −4.4 to −5.5pp | Growth rule plants CLIP error modes |
-| CompactPTA (distance gate) | −0.2 to −6.0pp | Gate removes correct updates along with wrong ones |
-| BankCompact / GaussCompact | −5.9 to −21.7pp | Compounds individual errors |
-| AugPTA (augmentation ensembling) | −0.2 to −2.0pp | Ensembled logits *less* accurate than single view |
-| AnchorPTA (text-anchor damping) | −0.01/−0.02pp | Damping degenerates to uniform scaling after warm-up |
+**One useful thing we found**: Whether CLIP and the patch vote agree is a strong signal that CLIP is correct (30+ percentage point accuracy gap). But this is a *diagnostic*, not a *fix* — we can tell when CLIP is uncertain, but we can't do anything about it.
 
-**The pattern**: Offline gates pass because they use favorable proxies (true-label statistics, offline k-means). Online, every mechanism must estimate from CLIP's biased write stream, and each fails for a distinct, identifiable reason — but all share the same root cause.
+**Tried in**: write-gating, write-reweighting, read-time reweighting. All failed.
 
-**Hyperparameter sweep**: Default α=0.01 / T=20 sits at the top of its local grid. Not a strawman.
-
-**Status**: Closed. No mechanism whose advantage depends on statistics estimated from CLIP's own guesses has beaten base PTA.
+**Verdict**: Dead end. Closed.
 
 ---
 
-### D. DEC Certainty Regularizer (Phase 1 only)
+### 2. Trust Signals (Phases 1–10)
 
-**Hypothesis**: Entropy + logit-norm temperature modulates write weight to reduce impact of noisy high-confidence samples.
+**The idea**: If we can identify *when* CLIP is wrong, we can either skip those writes, down-weight them, or correct the prototype geometry afterward.
 
-**Status**: Implemented, committed, **not GPU-validated**. Offline pre-validation found the committed temperature mapping runs 0.72–0.83 (near-constant, not an adaptive filter) with direction *inverted* relative to the strongest purity signal (entropy tertiles on dtd: low-H 63.2% purity / high-H 16.4%). Would need reparameterization before cluster runs.
+**What we tried** (10 phases, hundreds of GPU runs):
 
-**Recommendation**: Reparameterize as entropy-gated/entropy-weighted write rule, or close.
+| Approach | Result |
+|----------|--------|
+| Reweight the prototype at read-time based on trust | Did nothing — the trust signal and "tie" samples overlap 88%, so there's nowhere for the reweighting to act |
+| Skip writes when the prototype looks confused | Made things worse — freezing a class starves it of the good writes it needs |
+| Nudge confused prototypes apart | Fixed the geometry exactly as designed, but made accuracy worse — can't distinguish "close because of drift" from "close because they genuinely look alike" |
+| Add a drift detector to only nudge drifted pairs | Mildest result ever (zero regression anywhere), but the gain was +0.03 to +0.07% — not enough to matter |
+| Multi-view consistency (run the image through 4 augmented copies, check if CLIP agrees with itself) | Strongest diagnostic signal in the entire campaign (+27pp purity gap). Still zero improvement as an intervention. |
 
----
+**The key paradox**: The *better* a diagnostic signal is at identifying wrong predictions, the *worse* it performs as a write-time lever. This isn't a coincidence — it's structural. Good diagnostics flag the same samples that are genuinely ambiguous, and there's no reliable way to know what the right answer is for those samples.
 
-## Five Facts That Constrain All Future Work
-
-1. **The prototype is the right lever.** On CLIP↔prototype ties, the prototype is the more reliable predictor on every dataset. The method works; improving it is the goal.
-
-2. **The write-stream bias is the binding constraint.** All writes are CLIP-driven with no ground truth. Every mechanism that must estimate statistics from this stream (variance, cluster membership, trust scores) fails because CLIP's biased guesses corrupt the estimates.
-
-3. **Diagnostics are strong; interventions are not.** Patch agreement (+30pp), prototype confusability (+16pp), multi-view consistency (+27pp) — all real, reproducible signals. None converts to an accuracy lever via any scalar mechanism tested (gate, up-weight, down-weight, repulsion, damping, ensembling).
-
-4. **The space of scalar trust levers is exhausted.** Write × {gate, up, down, two-sided}, read × {up, down, two-sided}, 3 signal sources, all combinations — consistent null or negative results. The bottleneck is not signal quality but the structural overlap between "tie" samples and "untrusted" samples (~88% overlap regardless of signal source).
-
-5. **PTA's default EMA is already optimal within this class.** The α/T sweep confirms the default is not a strawman. Every modification to the write rule or fusion rule degrades performance.
+**Verdict**: Exhaustively explored. Close this line entirely.
 
 ---
 
-## What Would Need to Be True for a Pivot to Succeed
+### 3. Better Prototype Representations (Waves 1–3)
 
-A fundamentally different mechanism is needed — one that does *not* rely on:
-- Scalar trust scores applied per-sample or per-class
-- Statistics estimated from CLIP's own biased write stream
-- Gating or reweighting the EMA write
+**The idea**: PTA uses one average vector per class. What if we used something richer — a Gaussian (mean + variance), a bank of K prototypes, or a gated write that only accepts nearby writes?
 
-Possible directions that have NOT been tested (and their risk):
-- **External grounding**: Using a second model, retrieval database, or self-training loop to provide pseudo-labels independent of CLIP's own zero-shot. High effort, untested.
-- **Batch-aware methods**: Processing groups of samples jointly (memory buffer, contrastive objectives). Requires architectural changes to PTA's sequential design.
-- **Representation-level change**: Moving beyond ViT-B/16 CLIP Surgery features entirely (stronger backbone, different pre-training). Different research question.
-- **Abandoning prototype improvement**: Accepting PTA's +2–3pp as the ceiling for this specific adaptation mechanism and pivoting to a different TTA paradigm entirely.
+**What happened**: Every method failed. Offline diagnostics passed; online methods failed.
+
+| Method | Why it failed |
+|--------|---------------|
+| Gaussians | Variance estimated from biased stream amplifies errors instead of reducing them |
+| K-prototype bank (v1) | All K prototypes collapse to one — nearest-assignment can't create diversity from CLIP's guesses |
+| K-prototype bank (v2) | Diversity achieved, but the new prototypes are seeded from *wrong* CLIP writes — error modes, not genuine sub-classes |
+| Distance-based write gate | Gate removes correct writes along with wrong ones — same problem as trust gating |
+| Augmentation ensembling | Averaging multiple augmented views produces *worse* predictions than a single view |
+| Text-anchor damping | After a short warm-up, 98–100% of writes get damped — becomes uniform scaling, identical to base PTA |
+
+**Why offline gates passed but online failed**: Offline tests used ground-truth labels to validate the mechanism. Online, everything must be estimated from CLIP's own guesses, and those guesses are biased ~50% of the time on hard datasets. The gap between "works with perfect information" and "works with CLIP's information" is the whole problem.
+
+**Hyperparameter check**: We swept α and T (PTA's two main parameters). Default values sit at the top of the grid. The baseline is not a strawman.
+
+**Verdict**: Closed.
 
 ---
 
-*For detailed methodology, see [METHODOLOGY.md](./METHODOLOGY.md). For per-phase analysis, see individual phase reports in this directory.*
+### 4. DEC Certainty Regularizer (Not Yet Run)
+
+**The idea**: Use prediction entropy to modulate write strength — uncertain predictions get written more weakly.
+
+**Status**: Built, committed, not tested on GPU. Offline checks show the committed implementation is near-constant (doesn't actually adapt), and the direction is inverted relative to the strongest purity signal we found. Would need rework before running.
+
+**Verdict**: On hold. Reparameterize or close.
+
+---
+
+## Five Things We Know for Sure
+
+1. **The prototype is the right thing to improve.** *(A "prototype" is a single running average vector PTA maintains per class, distilled from the test images it has seen so far; on any given image, PTA blends the prototype's opinion with CLIP's.)* It beats CLIP when they disagree. The method works; we just can't make it work *better*.
+
+2. **The problem is the input, not the mechanism.** *(Every test image is fed through CLIP, which produces a guess with no ground-truth label to validate it against; that guess — a "write" — is what gets folded into the prototype. So the prototype is only ever as good as CLIP's own biased guesses.)* All writes come from CLIP's own guesses with no ground truth. Every method that tries to estimate quality from these guesses fails because the guesses themselves are biased.
+
+3. **Good diagnostics don't make good interventions.** *(A "diagnostic" is a signal that tells us which predictions are likely wrong; a "lever" is a mechanism that acts on that signal to improve accuracy. We can reliably *detect* bad predictions, but every attempt to *react* to that detection fails.)* We found three strong signals (patch agreement, confusability, multi-view consistency) that reliably identify wrong predictions. None of them improves accuracy when used as a lever. This isn't a failure of engineering — it's a structural limitation: the same samples that carry a useful warning are the genuinely ambiguous ones, for which there is no way to know the correct answer at test time.
+
+4. **The scalar trust-lever space is exhausted.** *(A "trust signal" tries to estimate how much to trust CLIP's guess on the current image — e.g. its own confidence, or how consistent it is across views. The "write side" is when the guess is being folded into the prototype; the "read side" is when the prototype's opinion is combined with CLIP's to produce the final prediction. A "lever" is any knob that scales that trust — gating (drop uncertain guesses entirely), up-weighting (trust uncertain ones *more*), down-weighting (trust them *less*), or two-sided reweighting.)* We tested gating, up-weighting, down-weighting, and two-sided reweighting on the write side and read side, with three different signal sources, in all combinations. Consistent null results.
+
+5. **PTA's default is already optimal within this class.** *(The "α/T sweep" is a grid search over PTA's only two hyperparameters — α, how much weight the original text description keeps vs. the accumulating prototype, and T, a temperature controlling how slowly the prototype updates. We swept both across a range; the default values already score at the top of the grid, so every deviation makes things worse.)* The α/T sweep confirms it. Every modification makes things worse.
+
+---
+
+## Where Does This Leave Us?
+
+If we want to beat PTA, we need a fundamentally different approach — one that doesn't rely on filtering or correcting CLIP's own guesses. Some options:
+
+| Direction | What it means | Effort |
+|-----------|---------------|--------|
+| External grounding | Use a second model, a retrieval database, or self-training to get better pseudo-labels than CLIP's zero-shot | High |
+| Batch-aware methods | Process groups of images jointly instead of one-at-a-time (contrastive objectives, memory buffers) | Medium-High |
+| Stronger backbone | Move beyond ViT-B/16 CLIP Surgery features entirely | Different question |
+| Accept the ceiling | PTA's +2–3% is the limit for this adaptation mechanism; pivot to a different TTA paradigm | Zero effort |
+
+---
+
+*For detailed numbers and methodology, see the individual phase reports in this directory.*
