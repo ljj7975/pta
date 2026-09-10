@@ -1,0 +1,28 @@
+# AugPTA (TPT-style view ensembling for PTA) method defaults — inherits base.
+#
+# For each test sample: build V views (original + V-1 augmented copies),
+# encode with the frozen CLIP encoder, keep the K_views LOWEST-entropy views
+# (TPT selection), and average their logits. The ensemble logits become
+# (a) the pseudo-label source for PTA's UNGATED softmax-EMA write (write
+# content stays the ORIGINAL real feature) and (b) the clip term of the
+# fusion. The prototype update rule is exactly base PTA's — no skips, no
+# gates, no reweighting; the only lever is label quality.
+#
+# V=1 reduces the adapter to base PTA exactly (identity ensemble).
+#
+# `V` and `K_views` are selected per-run via --override, e.g.:
+#   --override V=8 K_views=4
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+V: 8
+K_views: 4

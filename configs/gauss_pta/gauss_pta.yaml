@@ -1,0 +1,35 @@
+# GaussPTA — per-class Gaussian prototype TTA (TCA-style upgrade of base PTA).
+#
+# Write rule = base PTA MULTI-CLASS: every class c with softmax(clip)[c] >= 0.1
+# is written with w_c = 1 - exp(-p_c / T) (T from image_level, default 20.0).
+# State per class c (float32):
+#   mu_c — L2-normalized mean, initialized at the class text embedding
+#   v_c  — per-dim variance, initialized isotropic (vector of ones)
+#   n_c  — effective write count, initialized 0
+# Update: mu_c <- normalize((1-w_c)*mu_c + w_c*x);
+#         v_c  <- (1-w_c)*v_c + w_c*(x - mu_c)^2 (deviation from updated mean);
+#         n_c  <- n_c + w_c.
+# Score = shifted Mahalanobis:
+#   d_c = (1/D) * sum_d (x - mu_c)^2 / (v_c + shrink * Vbar_d), logit_c = -d_c,
+#   where Vbar_d is the per-dim mean of v across ALL classes (recomputed each
+#   step). Fusion: final = clip + 100 * (logit - max_c logit); Mahalanobis math
+#   in fp32, fused logits cast back to fp16.
+#
+# `shrink` is the variance-regularization coefficient (shrinkage of the
+# per-class variance toward the cross-class per-dim mean Vbar). It is selected
+# per-run via --override, e.g.:
+#   --override shrink=0.1
+#   --override shrink=0.5
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+shrink: 0.1

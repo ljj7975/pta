@@ -1,0 +1,36 @@
+# BankCompact-PTA (proper growing bank + intra-class compactness gate) —
+# combination of the BankV2 and CompactPTA ideas. Inherits shared base.
+#
+#   state per class c (float32):
+#     slot 0     — anchor, starts at ZERO, writable, never recycled;
+#     slots 1..K-1 — specialized modes, threshold-gated growth, recyclable.
+#   write rule = base PTA multi-class (w_c = 1 - exp(-p_c / T)); route to the
+#     nearest active slot k*; if cos(x, refine[c,k*]) < create_threshold the
+#     feature is a NEW MODE (grow a slot if room, else recycle least-used)
+#     UNGATED; otherwise the absorb EMA weight is modulated by the
+#     compactness gate on d = 1 - cos(x, P[c,k*]):
+#       gate_mode=soft: w_c *= exp(-d^2 / (2 sigma_c^2))
+#       gate_mode=hard: w_c = 0 if d > mean_c + hard_k * std_c else w_c
+#   score = max-of-active cosine; fusion = exact PTA mirror.
+#
+# K=1 with gate_mode=off reproduces base PTA exactly.
+# `K`, `create_threshold`, `gate_mode` selected per-run via --override.
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+K: 3
+create_threshold: 0.85
+gate_mode: soft
+sigma_init: 0.1
+sigma_min: 0.05
+stats_ema: 0.05
+hard_k: 0.5

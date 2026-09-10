@@ -1,0 +1,29 @@
+# Multi-view-consistency read-time fusion PTA method defaults.
+#
+# Write rule is byte-identical to base PTA. Only the fusion READ weight on
+# image_proto is scaled per-sample by the multi-view agreement trust signal:
+#   trusted   (agreement >= agreement_thresh)  -> tau_image_proto x `tau_scale_trusted`
+#   untrusted (agreement <  agreement_thresh)  -> tau_image_proto x `tau_scale_untrusted`
+# With tau_scale_trusted=tau_scale_untrusted=1.0 this is base PTA exactly
+# (in-grid control), regardless of n_views/agreement_thresh.
+#
+# Re-sweeps the exact (tau_scale_trusted, tau_scale_untrusted) grid used in
+# the completed patch-vote-based trust_fusion_pta study for direct
+# comparability -- only the trust-signal source differs.
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: TrustAdaptiveFusion
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+  tau_scale_trusted: 1.0
+  tau_scale_untrusted: 1.0
+
+n_views: 4
+agreement_thresh: 1.0

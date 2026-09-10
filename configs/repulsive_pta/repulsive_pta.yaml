@@ -1,0 +1,28 @@
+# Prototype-repulsion PTA method defaults (see models/repulsive_pta.py).
+#
+# Write rule: always argmax(clip), single-class EMA, never dropped or
+# reweighted (unmodified top-1-write mechanism). In addition, a repulsion
+# correction pushes prototype[top1] and its nearest-other class apart when
+# triggered. repulsion_lr=0.0 is a hard no-op (control) and must reproduce
+# the established top-1-write reference (dtd 46.85 / flowers 74.22 /
+# pets 90.75).
+#
+# repulsion_lr / trigger overridden per-run via --override, e.g.:
+#   --override repulsion_lr=0.05 trigger=confusable
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+repulsion_lr: 0.0
+trigger: confusable
+confusability_percentile: 66.0

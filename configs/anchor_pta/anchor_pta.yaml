@@ -1,0 +1,28 @@
+# AnchorPTA (text-anchor-referenced EMA damping) method defaults — inherits base.
+#
+# Damp the per-class EMA write rate of classes whose refined vector has
+# drifted from its IMMUTABLE text anchor (cos(refine[c], text[c]) below
+# damp_threshold). The text anchor is fixed a priori — never estimated from
+# the biased stream, so the referee is impartial. Writes are never removed,
+# only reduced toward damp_floor (default 0.5 => at most 2x cut), so no class
+# is starved. For healthy classes sim ~ 0.97-0.99 at alpha=0.01 (above the
+# 0.93/0.96 wave thresholds), so damping fires only under error capture.
+#
+# damp_threshold = 0 disables damping => adapter reduces to base PTA exactly.
+#
+# `damp_threshold` and `damp_floor` are selected per-run via --override, e.g.:
+#   --override damp_threshold=0.96 damp_floor=0.5
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+damp_threshold: 0.0
+damp_floor: 0.5

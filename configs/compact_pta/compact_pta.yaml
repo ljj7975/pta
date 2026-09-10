@@ -1,0 +1,32 @@
+# Compact-PTA (intra-class compactness write gate) method defaults — inherits
+# shared base.
+#
+# Write rule = base PTA multi-class write: for every class c with
+# softmax(clip)[c] >= 0.1, w_c = 1 - exp(-p_c / T) and the class prototype is
+# EMA-updated with w_c (identical to models/image_level/pta_image.py).
+# Gate = distance-to-prototype compactness: each write's EMA weight is
+# modulated by d_c = 1 - cos(x, proto_c):
+#   gate_mode=soft: w_c *= exp(-d_c^2 / (2 sigma_c^2))
+#                   (sigma_c = per-class running EMA of d_c, floored at sigma_min)
+#   gate_mode=hard: w_c = 0 if d_c > mean_c + hard_k * std_c else w_c
+#   gate_mode=off : gate disabled — base PTA exactly (control)
+# gate_mode is selected per-run via --override, e.g.:
+#   --override gate_mode=soft
+#   --override gate_mode=hard
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+gate_mode: soft
+sigma_init: 0.1
+sigma_min: 0.05
+stats_ema: 0.05
+hard_k: 0.5

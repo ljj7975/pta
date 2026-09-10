@@ -1,0 +1,40 @@
+# BankV2-PTA (proper per-class GROWING bank) method defaults — inherits base.
+#
+# Proper re-implementation of the per-class prototype bank.  Fixes the v1
+# collapse (rich-get-richer to one active slot) with the repo-native
+# anti-collapse pattern (utils/kmeans.py + gaussian_patch.py): an incoming
+# feature joins the nearest prototype only if similar enough; otherwise it
+# spawns a new specialized slot, and the least-used slot is recycled when the
+# bank is full.
+#
+#   state per class c (float32):
+#     slot 0     — anchor, starts at ZERO (base PTA's prototype), writable,
+#                  NEVER recycled (keeps the text-anchored default);
+#     slots 1..K-1 — specialized modes, created on threshold-gated growth,
+#                  EMA-updated, recyclable (least-used).
+#   write rule = base PTA multi-class — every class c with
+#     softmax(clip)[c] >= 0.1 receives w_c = 1 - exp(-p_c / T);
+#     route to k* = argmax_k cos(x, refine[c,k]); if cos < create_threshold
+#       -> new mode (grow a slot if room, else recycle least-used specialized);
+#     else P[c,k*] <- (1-w_c) P[c,k*] + w_c x (no re-normalization).
+#   score = max-of-active cosine: logit_c = max_k cos(x, refine[c,k]).
+#
+# K=1 reproduces base PTA exactly (the growth/recycle branch is disabled).
+# Fusion is an exact mirror of base PTA: final = clip + 100 * logit_c.
+#
+# `K` and `create_threshold` are selected per-run via --override, e.g.:
+#   --override K=3 --override create_threshold=0.85
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+K: 3
+create_threshold: 0.85

@@ -1,0 +1,32 @@
+# Two-sided write-reweight PTA method defaults, driven by view-consistency
+# and/or prototype-confusability signals (see models/trust_reweight_pta.py).
+#
+# Write rule: always argmax(clip), single-class EMA, never dropped (Part 4b
+# mechanism). Only the EMA weight is scaled: boost when confident AND clean
+# (trusted), boost_down otherwise. boost=boost_down=1.0 is the control
+# (signal computation skipped entirely) and must reproduce the Part 4a/4b
+# top-1-write reference (dtd 46.94 / flowers 74.54 / pets 90.86).
+#
+# boost / boost_down / signal_source overridden per-run via --override, e.g.:
+#   --override boost=2.0 boost_down=0.5 signal_source=confusability
+
+defaults:
+  - ../base
+
+image_level:
+  alpha: 0.01
+  T: 20.0
+
+fusion:
+  type: WeightedFusion
+  tau_text: 1.0
+  tau_image_proto: 100.0
+  tau_patch_proto: 0.0
+
+boost: 1.0
+boost_down: 1.0
+signal_source: view
+conf_margin_thresh: 0.2
+n_views: 4
+agreement_thresh: 1.0
+confusability_percentile: 66.0
